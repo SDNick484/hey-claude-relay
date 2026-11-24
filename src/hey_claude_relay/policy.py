@@ -21,6 +21,10 @@ from .config import GateConfig, ServerConfig, template_fields
 
 DENIED = "Refused by the relay: {what} is not allowed by voice. Tell the driver plainly and do not try another way."
 UNREADABLE = "Refused by the relay: it could not tell which service this call uses, so nothing was done."
+EXTRA_ARGUMENT = (
+    "Refused by the relay: this call carries an argument ({name}) that the relay's rules do not cover, "
+    "so nothing was done."
+)
 UNKNOWN_SERVER = "Refused by the relay: it has no rules for the server this tool belongs to, so nothing was done."
 
 
@@ -91,6 +95,13 @@ class Policy:
                 # A raw escape hatch, a missing field, a value that is not text: whatever it is,
                 # the rules below could not be applied to it.
                 return Refuse(UNREADABLE)
+            covered = {
+                *(template_fields(server.service_from[call.tool]) or []),
+                *server.service_args.get(call.tool, ()),
+            }
+            for name, value in call.arguments.items():
+                if value is not None and name not in covered:
+                    return Refuse(EXTRA_ARGUMENT.format(name=str(name)[:40]))
             if _matches(service, server.deny_services):
                 return Refuse(DENIED.format(what=service))
             if server.allow_services and not _matches(service, server.allow_services):

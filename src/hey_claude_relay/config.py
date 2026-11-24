@@ -106,6 +106,10 @@ class ServerConfig(_Model):
     # service out of a call's arguments, e.g. { ha_call_service = "{domain}.{service}" }. A call
     # on such a tool whose service cannot be read is refused.
     service_from: dict[str, str] = Field(default_factory=dict)
+    # Besides the arguments the template reads, the only ones such a call may carry. Anything
+    # else that is set (a raw escape hatch, say) gets the call refused: the service says nothing
+    # about what another argument might make the server do.
+    service_args: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     allow_services: tuple[str, ...] = ()  # globs; when set, any other service is refused
     deny_services: tuple[str, ...] = ()  # globs; always refused, whatever the allow-list says
 
@@ -119,6 +123,19 @@ class ServerConfig(_Model):
                     'such as "{domain}.{service}"'
                 )
         return value
+
+    @model_validator(mode="after")
+    def _service_rules_name_listed_tools(self) -> ServerConfig:
+        # A rule about a tool nobody offers protects nothing, and usually means a typo.
+        if self.service_from and not self.tools:
+            raise ValueError("a server with service_from needs a tools list, so no other tool slips past its rules")
+        for tool in self.service_from:
+            if not any(fnmatch.fnmatchcase(tool, pattern) for pattern in self.tools):
+                raise ValueError(f"service_from names {tool!r}, which the tools list does not offer")
+        for tool in self.service_args:
+            if tool not in self.service_from:
+                raise ValueError(f"service_args names {tool!r}, which service_from does not")
+        return self
 
     @model_validator(mode="after")
     def _service_lists_need_service_from(self) -> ServerConfig:
@@ -239,6 +256,25 @@ class RelayConfig(_Model):
             server = servers.get(gate.server)
             if server is None:
                 raise ValueError(f"a gate names server {gate.server!r}, which is not configured")
+            if not server.tools:
+                raise ValueError(f"server {gate.server!r} has a gate, so it needs a tools list")
+            offered = any(
+                fnmatch.fnmatchcase(gate.match.tool, pattern) or fnmatch.fnmatchcase(pattern, gate.match.tool)
+                for pattern in server.tools
+            )
+            if not offered:
+                raise ValueError(
+                    f"a gate matches tool {gate.match.tool!r}, which server {gate.server!r} does not offer"
+                )
+            wanted = gate.match.service
+            if wanted is not None and server.allow_services:
+                reachable = any(
+                    fnmatch.fnmatchcase(wanted.casefold(), allowed.casefold())
+                    or fnmatch.fnmatchcase(allowed.casefold(), wanted.casefold())
+                    for allowed in server.allow_services
+                )
+                if not reachable:
+                    raise ValueError(f"a gate matches service {wanted!r}, which allow_services never lets through")
             reads_a_service = any(fnmatch.fnmatchcase(tool, gate.match.tool) for tool in server.service_from)
             if gate.match.service is not None and not reads_a_service:
                 # Without it the relay could not tell which calls the gate is for, and none would be held.

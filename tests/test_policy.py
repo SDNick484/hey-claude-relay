@@ -10,6 +10,7 @@ HOUSE_CFG = ServerConfig(
     auth="none",
     tools=("ha_search", "ha_get_state", "ha_call_service"),
     service_from={"ha_call_service": "{domain}.{service}"},
+    service_args={"ha_call_service": ("entity_id", "data")},
     allow_services=("light.*", "cover.open_cover", "cover.close_cover"),
     deny_services=("lock.unlock", "alarm_control_panel.alarm_disarm"),
 )
@@ -186,3 +187,43 @@ def test_config_refuses_a_gate_with_no_or_unknown_checks(require):
 def test_a_misspelled_policy_key_stops_startup():
     with pytest.raises(ConfigError, match="deny_service"):
         load_toml(HOUSE_POLICY + 'deny_service = ["lock.unlock"]\n')
+
+
+SMUGGLED = [
+    dict(domain="light", service="turn_on", ws_command="call_service", data={"domain": "lock", "service": "unlock"}),
+    dict(domain="light", service="turn_on", return_response=True),
+    dict(domain="cover", service="close_cover", target={"entity_id": "lock.front_door"}),
+]
+
+
+@pytest.mark.parametrize("arguments", SMUGGLED, ids=lambda a: sorted(a)[-1])
+def test_an_argument_the_rules_do_not_cover_is_refused(arguments):
+    # The service read from domain and service says nothing about what another argument may do.
+    refusal = P.decide(call(**arguments))
+    assert isinstance(refusal, Refuse) and "argument" in refusal.message
+
+
+def test_an_argument_left_null_is_as_good_as_absent():
+    assert P.decide(call(domain="light", service="turn_on", ws_command=None, entity_id="light.a")) == Allow()
+
+
+def test_a_server_with_service_rules_or_a_gate_must_list_its_tools():
+    bare = HOUSE_POLICY.replace('tools = ["ha_search", "ha_get_state", "ha_call_service"]\n', "")
+    with pytest.raises(ConfigError, match="tools"):
+        load_toml(bare)
+
+
+def test_service_from_must_name_a_listed_tool():
+    with pytest.raises(ConfigError, match="ha_call_servce"):
+        load_toml(HOUSE_POLICY.replace("service_from = { ha_call_service", "service_from = { ha_call_servce"))
+
+
+def test_a_gate_that_could_never_match_stops_startup():
+    env = {"RELAY_PASSPHRASE_HASH": PHRASE_HASH}
+    with pytest.raises(ConfigError, match="cover.open_covr"):
+        load_toml(HOUSE_POLICY + GATE_TOML.replace("cover.open_cover", "cover.open_covr"), env)
+    with pytest.raises(ConfigError, match="ha_call_servce"):
+        whole_tool = GATE_TOML.replace(
+            'match = { tool = "ha_call_service", service = "cover.open_cover" }', 'match = { tool = "ha_call_servce" }'
+        )
+        load_toml(HOUSE_POLICY + whole_tool, env)

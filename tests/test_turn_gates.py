@@ -327,3 +327,37 @@ async def test_two_messages_at_once_cannot_both_be_the_attempt():
             tg.start_soon(send, PHRASE)
             tg.start_soon(send, PHRASE)
     assert h.service_calls == [("cover", "open_cover")]  # once
+
+
+async def test_a_lockout_that_starts_during_the_comparison_wins(monkeypatch):
+    # Several attempts compared at once: the one that matches must not get through after the
+    # others have locked gated actions.
+    from hey_claude_relay import turn
+
+    async with gated(ASK_OPEN) as (r, h):
+        cid = (await r.turn("open the garage")).json()["conversation_id"]
+
+        def match_while_others_miss(attempt, encoded):
+            for _ in range(3):
+                r.app.state.keeper.miss()
+            return True
+
+        monkeypatch.setattr(turn, "verify_passphrase", match_while_others_miss)
+        body = (await r.turn(PHRASE, conversation_id=cid)).json()
+    assert h.service_calls == [] and body["reply"] == "That didn't match, so I left it alone."
+
+
+async def test_a_failure_in_the_check_drops_the_call_and_is_replayed_not_rerun(monkeypatch):
+    from hey_claude_relay import turn
+
+    def broken(attempt, encoded):
+        raise ValueError("memory limit exceeded")
+
+    async with gated(ASK_OPEN, say("Hello.")) as (r, h):
+        cid = (await r.turn("open the garage")).json()["conversation_id"]
+        monkeypatch.setattr(turn, "verify_passphrase", broken)
+        a = await r.turn(PHRASE, conversation_id=cid, turn_id="t-2")
+        b = await r.turn(PHRASE, conversation_id=cid, turn_id="t-2")  # no secret flag: must not become a message
+        assert_valid_history(history(r, cid))
+    assert a.status_code == b.status_code == 500 and a.json()["error"]["code"] == "internal"
+    assert h.service_calls == [] and len(r.claude.calls) == 1 and "sesame" not in r.claude.sent()

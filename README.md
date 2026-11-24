@@ -142,6 +142,11 @@ for is checked before anything is sent, and nothing Claude reads can change the 
   - `allow_services`, when set, are the only services allowed. Use it. A deny-list alone is easy
     to walk around: `cover.toggle` is not `cover.open_cover`, `lock.open` is not `lock.unlock`.
   - A call whose service cannot be read (a raw escape hatch, a missing field) is refused.
+  - `service_args` lists the other arguments such a call may carry. A call with any argument
+    beyond those and the template's own is refused, so a second way of saying what to do
+    (`ws_command`) cannot ride along with an allowed service.
+  - A server with `service_from` or a gate must have a `tools` list, and a rule that names a tool
+    or service that could never match stops startup.
   - Letter case and stray spaces are ignored when matching.
   - Leave tools whose actions are not services (such as `ha_bulk_control`) off the `tools` list:
     these rules cannot see through them.

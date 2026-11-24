@@ -400,7 +400,17 @@ class TurnRunner:
             # Locked by wrong guesses elsewhere while this call waited: not compared, not counted.
             return self._drop(conversation, pending, MISS, "gate_locked")
         # scrypt is slow on purpose; off the event loop it goes.
-        matched = await anyio.to_thread.run_sync(verify_passphrase, attempt, self._passphrase_hash)
+        try:
+            matched = await anyio.to_thread.run_sync(verify_passphrase, attempt, self._passphrase_hash)
+        except Exception as exc:
+            # The check itself broke. The call is dropped, and the failure is an answer that is
+            # stored, so a retry of this turn replays it instead of being read as a new message.
+            log.error("The passphrase check failed to run (%s); the held call was dropped", type(exc).__name__)
+            self._drop(conversation, pending, INTERNAL, "error:internal")
+            raise RelayError("internal", INTERNAL) from None
+        if self.keeper.locked():
+            # Locked while this comparison was running (several attempts at once): too late.
+            return self._drop(conversation, pending, MISS, "gate_locked")
         if not matched:
             if self.keeper.miss():
                 line = LOCKED_NOW.format(minutes=self.cfg.gates.lockout_minutes)

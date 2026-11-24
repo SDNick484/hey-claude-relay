@@ -71,3 +71,16 @@ async def test_an_attempt_the_relay_rejects_as_malformed_is_not_logged_either(ca
         resp = await r.turn(too_long, conversation_id=cid, secret=True)
         assert resp.status_code == 400 and r.app.state.conversations.get(cid).pending is not None
     assert "sesame" not in caplog.text and "sesame" not in resp.text
+
+
+async def test_an_attempt_in_a_body_of_the_wrong_shape_is_not_logged(caplog):
+    caplog.set_level(logging.DEBUG)
+    async with gated(ASK_OPEN) as (r, h):
+        await r.turn("open the garage")
+        body = {
+            "turn_id": "t",
+            "text": "open sesame forty two",
+            "secret": "yes",
+        }  # a validation error carries its input
+        resp = await r.http.post("/v1/turn", json=body)
+    assert resp.status_code == 400 and "sesame" not in caplog.text and "sesame" not in resp.text
