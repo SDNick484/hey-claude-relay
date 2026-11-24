@@ -67,6 +67,20 @@ async def test_a_common_name_that_is_not_a_listed_string_is_denied(name):
         V.caller(await V.verify(mint(common_name=name)))
 
 
+async def test_a_login_with_an_email_is_refused_even_with_a_listed_common_name():
+    with pytest.raises(AccessDenied, match="person"):
+        V.caller(await V.verify(mint(email="user@example.com")))
+
+
+@pytest.mark.parametrize("failure", [ValueError("Expecting value: line 1 column 1"), OSError("connection reset")])
+async def test_a_broken_certs_endpoint_is_a_denial_not_a_crash(failure):
+    async def broken(token):
+        raise failure
+
+    with pytest.raises(AccessDenied, match="signing keys"):
+        await AccessVerifier(POLICY, broken).verify(mint())
+
+
 def test_policy_urls_and_repr():
     assert POLICY.issuer == f"https://{TEAM}"
     assert POLICY.certs_url == f"https://{TEAM}/cdn-cgi/access/certs"

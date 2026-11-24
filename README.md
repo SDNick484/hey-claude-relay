@@ -111,8 +111,10 @@ tools and duration. What was said and what was answered are logged only at
 `RELAY_LOG_LEVEL=debug`, and a turn marked `secret` is never logged at any level.
 
 Without an `[access]` table the relay serves this machine only: it refuses to start on any
-address but loopback, and refuses any request that a proxy forwarded or that is addressed to
-another host. `--insecure-no-auth` turns those checks off for a test on a trusted LAN.
+address but loopback, and refuses any request that a proxy forwarded, that is addressed to
+another host, or that a web page on another site sent. `--insecure-no-auth` lifts the first
+two for a test on a trusted LAN; reach the relay by IP address then, because it still refuses
+requests addressed to a host name and cross-site requests.
 
 ## Development
 

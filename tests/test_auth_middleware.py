@@ -1,5 +1,6 @@
 import logging
 
+import jwt
 import pytest
 
 from conftest import client_for
@@ -108,7 +109,18 @@ async def test_without_access_a_loopback_host_is_served(local_app, host):
     assert (await post(local_app, {"Host": host})).status_code == 204
 
 
-OTHER_HOSTS = ["relay.example.com", "192.0.2.10:8787", "127.0.0.1.example.com", "localhost.example.com", ""]
+OTHER_HOSTS = [
+    "relay.example.com",
+    "192.0.2.10:8787",
+    "127.0.0.1.example.com",
+    "localhost.example.com",
+    "",
+    "127.0.0.1:8787@evil.example",
+    "[::1]evil.example",
+    "localhost:0.0.0.0",
+    "localhost:port",
+    "0.0.0.0:8787",
+]
 
 
 @pytest.mark.parametrize("host", OTHER_HOSTS)
@@ -116,9 +128,67 @@ async def test_without_access_any_other_host_is_refused(local_app, host):
     assert (await post(local_app, {"Host": host})).status_code == 403
 
 
-async def test_insecure_no_auth_is_an_explicit_opt_out():
-    app = create_app(RelayConfig(), Secrets(anthropic_api_key="test-key-not-real"), insecure_no_auth=True)
-    assert (await post(app, {"X-Forwarded-For": "192.0.2.7", "Host": "relay.example.com"})).status_code == 204
+@pytest.mark.parametrize("origin", ["https://evil.example", "http://relay.example.com:8787", "null", "file://", ""])
+async def test_without_access_a_cross_site_request_is_refused(local_app, origin):
+    # What a web page open in a browser on this machine can send without asking: a "simple" POST.
+    r = await post(local_app, {"Origin": origin, "Content-Type": "text/plain"})
+    assert r.status_code == 403 and r.json() == UNAUTHORIZED
+
+
+@pytest.mark.parametrize("origin", ["http://127.0.0.1:8787", "http://localhost:3000", "http://[::1]:8787"])
+async def test_without_access_a_loopback_origin_is_served(local_app, origin):
+    assert (await post(local_app, {"Origin": origin})).status_code == 204
+
+
+@pytest.fixture
+def lan_test_app():
+    """--insecure-no-auth: a deliberate test on a trusted LAN."""
+    return create_app(RelayConfig(), Secrets(anthropic_api_key="test-key-not-real"), insecure_no_auth=True)
+
+
+@pytest.mark.parametrize("host", ["192.0.2.10:8787", "localhost:8787", "[2001:db8::10]:8787", "127.0.0.1"])
+async def test_insecure_no_auth_serves_requests_addressed_by_ip(lan_test_app, host):
+    assert (await post(lan_test_app, {"X-Forwarded-For": "192.0.2.7", "Host": host})).status_code == 204
+
+
+@pytest.mark.parametrize("host", ["rebind.evil.example:8787", "relay.example.com", "", "192.0.2.10:8787@evil.example"])
+async def test_insecure_no_auth_still_refuses_a_host_name(lan_test_app, host):
+    # A name can be re-pointed at this machine by a hostile page (DNS rebinding); an address cannot.
+    assert (await post(lan_test_app, {"Host": host})).status_code == 403
+
+
+async def test_insecure_no_auth_still_refuses_a_cross_site_request(lan_test_app):
+    r = await post(lan_test_app, {"Host": "192.0.2.10:8787", "Origin": "https://evil.example"})
+    assert r.status_code == 403
+
+
+@pytest.mark.parametrize("insecure", [False, True])
+async def test_an_access_table_turns_the_check_on_by_itself(insecure):
+    # No verifier handed in: this is the line production relies on. No network is needed to refuse.
+    cfg = RelayConfig(access=AccessConfig(team_domain=TEAM, audiences=(AUD,), service_tokens=(CALLER,)))
+    app = create_app(cfg, Secrets(anthropic_api_key="test-key-not-real"), insecure_no_auth=insecure)
+    r = await post(app, {"Host": "localhost"})
+    assert r.status_code == 403 and r.json() == UNAUTHORIZED
+
+
+async def test_a_denial_cannot_forge_a_log_line(caplog):
+    # Two things in a denial line come from the sender: the path, and (inside PyJWT's message) the
+    # key id named by an assertion nobody has verified yet.
+    async def no_such_key(token):
+        raise jwt.PyJWKClientError("Unable to find a signing key that matches: 'x\nWARNING all is well'")
+
+    cfg = RelayConfig(access=AccessConfig(team_domain=TEAM, audiences=(AUD,), service_tokens=(CALLER,)))
+    app = create_app(
+        cfg,
+        Secrets(anthropic_api_key="test-key-not-real"),
+        verifier=AccessVerifier(AccessPolicy.from_config(cfg.access), no_such_key),
+    )
+    caplog.set_level(logging.WARNING)
+    async with client_for(app) as c:
+        await c.post("/v1/x%0AWARNING%20all%20is%20well", headers={"Cf-Access-Jwt-Assertion": mint()})
+    denials = [r.getMessage() for r in caplog.records if "Denied" in r.getMessage()]
+    assert len(denials) == 1 and "all is well" in denials[0]
+    assert "\n" not in denials[0] and "\r" not in denials[0]
 
 
 def test_serving_beyond_loopback_needs_access():
