@@ -1,4 +1,4 @@
-from conftest import HOUSE_POLICY, assert_valid_history, make_relay
+from conftest import HOUSE_POLICY, PHRASE_HASH, assert_valid_history, make_relay
 from fakes import say, use
 from stubs import house_stub
 
@@ -88,7 +88,8 @@ async def test_a_gated_call_is_never_run_ungated():
     # Until the gate's checks exist (the next tasks), a call a gate matches is refused outright.
     open_garage = {"domain": "cover", "service": "open_cover", "entity_id": "cover.garage_door"}
     script = [use(("house__ha_call_service", open_garage)), say("I can't open that yet.")]
-    async with house_stub() as h, make_relay(HOUSE_POLICY + GATE, *script, stubs=[h]) as r:
+    env = {"RELAY_PASSPHRASE_HASH": PHRASE_HASH}
+    async with house_stub() as h, make_relay(HOUSE_POLICY + GATE, *script, stubs=[h], env=env) as r:
         body = (await r.turn("open the garage")).json()
     assert h.service_calls == [] and body["tools_used"] == []
     assert r.claude.calls[1]["messages"][-1]["content"][0]["is_error"] is True

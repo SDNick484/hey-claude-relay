@@ -1,8 +1,11 @@
+import io
+
 import pytest
 
 from conftest import EXAMPLE_ENV
 from hey_claude_relay.__main__ import listen_address, main
 from hey_claude_relay.config import ConfigError
+from hey_claude_relay.gates import verify_passphrase
 
 
 @pytest.fixture(autouse=True)
@@ -54,3 +57,56 @@ def test_check_config_needs_the_api_key(tmp_path, capsys, monkeypatch):
     cfg.write_text("")
     assert main(["check-config", "--config", str(cfg)]) == 2
     assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+
+def test_hash_passphrase_cli_reads_stdin_and_prints_only_the_hash(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO("open sesame 42\n"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY")  # it needs no configuration at all
+    assert main(["hash-passphrase"]) == 0
+    out = capsys.readouterr()
+    assert out.out.startswith("RELAY_PASSPHRASE_HASH=scrypt:") and out.out.count("\n") == 1
+    assert "sesame" not in out.out + out.err and "forty" not in out.out + out.err
+    assert verify_passphrase("open sesame forty two", out.out.strip().split("=", 1)[1])
+
+
+@pytest.mark.parametrize("phrase", ["sesame", "", "   ", "never mind", "No!", "7"])
+def test_hash_passphrase_cli_refuses_a_phrase_that_would_not_work(monkeypatch, capsys, phrase):
+    monkeypatch.setattr("sys.stdin", io.StringIO(phrase + "\n"))
+    assert main(["hash-passphrase"]) == 2
+    out = capsys.readouterr()
+    assert out.out == "" and "two words" in out.err
+
+
+def test_hash_passphrase_on_a_terminal_asks_twice_without_echo(monkeypatch, capsys):
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    asked = []
+
+    def fake_getpass(prompt):
+        asked.append(prompt)
+        return "open sesame 42"
+
+    monkeypatch.setattr("sys.stdin", Terminal())
+    monkeypatch.setattr("getpass.getpass", fake_getpass)
+    assert main(["hash-passphrase"]) == 0 and asked == ["Passphrase: ", "Again: "]
+    assert capsys.readouterr().out.startswith("RELAY_PASSPHRASE_HASH=scrypt:")
+
+
+def test_hash_passphrase_on_a_terminal_refuses_a_mismatch(monkeypatch, capsys):
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    answers = iter(["open sesame 42", "open sesame 43"])
+    monkeypatch.setattr("sys.stdin", Terminal())
+    monkeypatch.setattr("getpass.getpass", lambda prompt: next(answers))
+    assert main(["hash-passphrase"]) == 2
+    out = capsys.readouterr()
+    assert out.out == "" and "did not match" in out.err
+
+
+def test_the_passphrase_is_never_a_command_line_argument(capsys):
+    with pytest.raises(SystemExit):
+        main(["hash-passphrase", "open sesame 42"])

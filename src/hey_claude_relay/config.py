@@ -274,6 +274,16 @@ def load_config(path: Path, env: Mapping[str, str]) -> tuple[RelayConfig, Secret
         raise ConfigError(f"{path}: {_explain(exc)}") from None
     if cfg.prompt_file is not None and not cfg.prompt_file.is_absolute():
         cfg = cfg.model_copy(update={"prompt_file": path.parent / cfg.prompt_file})
+    passphrase_hash = _env(env, "RELAY_PASSPHRASE_HASH")
+    if any("passphrase" in gate.require for gate in cfg.gate):
+        from .gates import check_passphrase_hash  # here, not at the top: gates imports this module
+
+        if passphrase_hash is None:
+            raise ConfigError(
+                f"{path}: a gate requires a passphrase, which needs RELAY_PASSPHRASE_HASH in the environment. "
+                "Run `hey-claude-relay hash-passphrase` to make one."
+            )
+        check_passphrase_hash(passphrase_hash)
     bearer: dict[str, str] = {}
     for server in cfg.server:
         if server.auth == "cf-service-token":
@@ -295,7 +305,7 @@ def load_config(path: Path, env: Mapping[str, str]) -> tuple[RelayConfig, Secret
         anthropic_api_key=_env(env, "ANTHROPIC_API_KEY"),
         cf_client_id=_env(env, "CF_ACCESS_CLIENT_ID"),
         cf_client_secret=_env(env, "CF_ACCESS_CLIENT_SECRET"),
-        passphrase_hash=_env(env, "RELAY_PASSPHRASE_HASH"),
+        passphrase_hash=passphrase_hash,
         bearer=bearer,
     )
     return cfg, secrets

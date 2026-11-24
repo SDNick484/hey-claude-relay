@@ -1,8 +1,9 @@
-"""Command line: ``hey-claude-relay serve`` and ``hey-claude-relay check-config``."""
+"""Command line: ``hey-claude-relay serve``, ``check-config`` and ``hash-passphrase``."""
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -12,6 +13,7 @@ from .access import check_bind
 from .app import create_app
 from .claude import AnthropicClaude
 from .config import ConfigError, RelayConfig, Secrets, load_config, prompt_text
+from .gates import CANCEL_WORDS, hash_passphrase, normalize_passphrase
 from .logsafe import configure_logging
 
 DEFAULT_BIND = "127.0.0.1"
@@ -44,7 +46,30 @@ def _parser() -> argparse.ArgumentParser:
     )
     check = sub.add_parser("check-config", help="read the configuration and say whether it is usable")
     check.add_argument("--config", help="path to relay.toml (RELAY_CONFIG, default ./relay.toml)")
+    # No arguments on purpose: a passphrase on a command line ends up in shell history.
+    sub.add_parser("hash-passphrase", help="ask for a passphrase and print the line for RELAY_PASSPHRASE_HASH")
     return parser
+
+
+def _hash_passphrase() -> int:
+    """Read a passphrase (hidden, twice, on a terminal; one line otherwise) and print its hash line."""
+    if sys.stdin.isatty():
+        phrase = getpass.getpass("Passphrase: ")
+        if getpass.getpass("Again: ") != phrase:
+            print("hey-claude-relay: the two entries did not match.", file=sys.stderr)
+            return 2
+    else:
+        phrase = sys.stdin.readline().rstrip("\r\n")
+    heard = normalize_passphrase(phrase)
+    if len(heard.split()) < 2 or heard in CANCEL_WORDS:
+        print(
+            "hey-claude-relay: choose a passphrase of at least two words (three or more is better), "
+            'and not one of the words that cancel a request ("never mind", "cancel", "stop", "no").',
+            file=sys.stderr,
+        )
+        return 2
+    print(f"RELAY_PASSPHRASE_HASH={hash_passphrase(phrase)}")
+    return 0
 
 
 def _serve(cfg: RelayConfig, secrets: Secrets, host: str, port: int, insecure_no_auth: bool) -> int:  # pragma: no cover
@@ -66,6 +91,8 @@ def _serve(cfg: RelayConfig, secrets: Secrets, host: str, port: int, insecure_no
 def main(argv: Sequence[str] | None = None) -> int:
     """Run a command. Returns 2 with one line on stderr when the configuration is unusable."""
     args = _parser().parse_args(argv)
+    if args.command == "hash-passphrase":
+        return _hash_passphrase()  # needs no configuration
     env = os.environ
     path = Path(args.config or env.get("RELAY_CONFIG") or "relay.toml")
     try:

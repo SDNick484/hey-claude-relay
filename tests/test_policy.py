@@ -1,6 +1,6 @@
 import pytest
 
-from conftest import HOUSE, HOUSE_POLICY, load_toml
+from conftest import HOUSE, HOUSE_POLICY, PHRASE_HASH, load_toml
 from hey_claude_relay.config import ConfigError, GateConfig, GateMatch, ServerConfig
 from hey_claude_relay.policy import DENIED, UNREADABLE, Allow, Hold, Policy, Refuse, ToolCall
 
@@ -140,7 +140,7 @@ require = ["passphrase"]
 
 
 def test_policy_keys_are_read_from_config():
-    cfg, _ = load_toml(HOUSE_POLICY + GATE_TOML)
+    cfg, _ = load_toml(HOUSE_POLICY + GATE_TOML, {"RELAY_PASSPHRASE_HASH": PHRASE_HASH})
     server, gate = cfg.server[0], cfg.gate[0]
     assert server.service_from == {"ha_call_service": "{domain}.{service}"}
     assert server.deny_services == ("lock.unlock", "alarm_control_panel.alarm_disarm")

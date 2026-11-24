@@ -15,6 +15,7 @@ from starlette.applications import Starlette
 from fakes import FakeClaude
 from hey_claude_relay.app import create_app
 from hey_claude_relay.config import RelayConfig, Secrets, load_config
+from hey_claude_relay.gates import hash_passphrase
 from hey_claude_relay.mcp_client import McpServers
 from stubs import Stub, transport_for
 
@@ -32,6 +33,10 @@ TEST_ENV: dict[str, str] = {
     "CF_ACCESS_CLIENT_SECRET": "s3cret",
     "COOKBOOKS_MCP_TOKEN": "tok-1",
 }
+
+# The passphrase the gate tests say, and its hash (made once: scrypt is deliberately slow).
+PHRASE = "open sesame forty two"
+PHRASE_HASH = hash_passphrase(PHRASE)
 
 # Whole relay.toml texts. Each ends in its [[server]] table, so a test can append a key to it.
 MATINEE = """
