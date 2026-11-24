@@ -21,3 +21,34 @@ idle_minutes = 15             # a conversation is forgotten after this long with
 team_domain = "example.cloudflareaccess.com"
 audiences = ["replace-with-the-access-application-aud-tag"]
 service_tokens = ["replace-with-the-phone-token-client-id.access"]
+
+# --- MCP servers -------------------------------------------------------------------------
+# Each [[server]] is one MCP server the relay may use. Its tools reach Claude under the
+# server's name ("matinee__search_collection"). Adding or removing a server is an edit here.
+#
+#   auth = "cf-service-token"   the server is behind Cloudflare Access; the relay sends the
+#                               service token in CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET
+#   auth = "bearer"             the server has its own token; token_env names the variable
+#   auth = "none"               no credentials
+#
+#   tools = [...]               allow-list of tool names (globs); leave out to allow all
+#   deny  = [...]               tool names never offered (globs)
+
+[[server]]
+name = "matinee"
+url = "https://mcp.example.com/matinee/mcp"
+auth = "cf-service-token"
+# tools = ["search_*", "get_*", "list_*", "where_is"]
+
+[[server]]
+name = "cookbooks"
+url = "https://cookbooks.example.com/mcp"
+auth = "bearer"
+token_env = "COOKBOOKS_MCP_TOKEN"
+
+[[server]]
+name = "home-assistant"
+url = "https://ha-mcp.example.com/mcp"
+auth = "cf-service-token"
+# A large server: offer only what a voice turn needs.
+tools = ["ha_search", "ha_get_state", "ha_get_overview", "ha_call_service"]

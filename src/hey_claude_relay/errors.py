@@ -35,6 +35,7 @@ INTERNAL = "Something went wrong on my end."
 REFUSAL = "I can't help with that one."
 EMPTY = "I don't have an answer for that."
 LOST = "I lost track of that request, so nothing was done. Ask again if you still want it."
+OUT_OF_TIME = "I ran out of time before I could finish."
 
 
 class RelayError(Exception):

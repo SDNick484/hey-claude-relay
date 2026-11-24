@@ -9,7 +9,9 @@ The relay is where the server list, the API key, the voice rules and the safety 
 adding an MCP server is a config edit here and no client changes.
 
 > **Status:** under construction, one milestone per pull request. Today the relay verifies who
-> is calling and holds a conversation with Claude; it does not call tools on MCP servers yet. The design is in
+> is calling, holds a conversation with Claude, and runs tools on the MCP servers it is given.
+> The safety rules for those tools (denied services, gates behind a passphrase) come next;
+> until they are in, do not point it at a server that can do anything you would mind. The design is in
 > [`docs/superpowers/specs/`](docs/superpowers/specs/2026-11-23-hey-claude-car-design.md) and
 > the build plan in [`docs/superpowers/plans/`](docs/superpowers/plans/2026-11-23-hey-claude-relay.md).
 
@@ -102,9 +104,28 @@ docker run --rm -p 127.0.0.1:8787:8787 --env-file .env \
   -v "$PWD/relay.toml:/config/relay.toml:ro" hey-claude-relay
 ```
 
-`relay.toml` holds settings; secrets come from the environment (`ANTHROPIC_API_KEY` so far; `.env`
-is gitignored) and are never written to a file in this repository. `relay.example.toml` documents
-every key.
+`relay.toml` holds settings; secrets come from the environment (`.env` is gitignored) and are
+never written to a file in this repository. `relay.example.toml` documents every key.
+
+| Variable | What it is |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | the key turns are billed to |
+| `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | the relay's own Access service token, sent to servers with `auth = "cf-service-token"` |
+| the name in a server's `token_env` | that server's bearer token, for `auth = "bearer"` |
+
+## How a turn runs
+
+1. The caller's Access assertion is verified, and a repeated `turn_id` is answered from memory.
+2. A new conversation reads the voice prompt and asks each configured server for its tools. It
+   keeps both for its whole life, so an edit to either takes effect in the next conversation.
+3. Claude is called with the conversation and the tools. When it asks for tools, the relay runs
+   them and returns the results, for up to 8 rounds and 45 seconds in all.
+4. At either limit the relay asks once more with tools switched off and adds "I ran out of time
+   before I could finish." That is a `200`, not an error.
+5. The reply is stripped of markdown and returned.
+
+A server that cannot be reached does not fail the turn: its tools are missing, or its calls
+come back as errors, and Claude says it could not reach it.
 
 Turns are logged one line each: conversation (first eight characters), client, outcome, rounds,
 tools and duration. What was said and what was answered are logged only at

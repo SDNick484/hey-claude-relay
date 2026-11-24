@@ -2,7 +2,7 @@
 
 import tempfile
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,11 +15,60 @@ from starlette.applications import Starlette
 from fakes import FakeClaude
 from hey_claude_relay.app import create_app
 from hey_claude_relay.config import RelayConfig, Secrets, load_config
+from hey_claude_relay.mcp_client import McpServers
+from stubs import Stub, transport_for
 
 # Placeholder values for every environment variable relay.example.toml needs. It grows with the example.
-EXAMPLE_ENV: dict[str, str] = {"ANTHROPIC_API_KEY": "placeholder-not-a-real-key"}
+EXAMPLE_ENV: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "placeholder-not-a-real-key",
+    "CF_ACCESS_CLIENT_ID": "placeholder.access",
+    "CF_ACCESS_CLIENT_SECRET": "placeholder-not-a-real-secret",
+    "COOKBOOKS_MCP_TOKEN": "placeholder-not-a-real-token",
+}
 # The environment every test relay starts from; a test's own env= is laid over it.
-TEST_ENV: dict[str, str] = {"ANTHROPIC_API_KEY": "test-key-not-real"}
+TEST_ENV: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "test-key-not-real",
+    "CF_ACCESS_CLIENT_ID": "relay.access",
+    "CF_ACCESS_CLIENT_SECRET": "s3cret",
+    "COOKBOOKS_MCP_TOKEN": "tok-1",
+}
+
+# Whole relay.toml texts. Each ends in its [[server]] table, so a test can append a key to it.
+MATINEE = """
+[[server]]
+name = "matinee"
+url = "http://127.0.0.1:9001/mcp"
+auth = "cf-service-token"
+"""
+COOKBOOKS_BEARER = """
+[[server]]
+name = "cookbooks"
+url = "http://127.0.0.1:9002/mcp"
+auth = "bearer"
+token_env = "COOKBOOKS_MCP_TOKEN"
+"""
+COOKBOOKS_NONE = """
+[[server]]
+name = "cookbooks"
+url = "http://127.0.0.1:9002/mcp"
+auth = "none"
+"""
+HOUSE = """
+[[server]]
+name = "house"
+url = "http://127.0.0.1:9003/mcp"
+auth = "none"
+tools = ["ha_search", "ha_get_state", "ha_call_service"]
+"""
+TWO_SERVERS = (
+    MATINEE
+    + """
+[[server]]
+name = "house"
+url = "http://127.0.0.1:9003/mcp"
+auth = "none"
+"""
+)
 
 
 @pytest.fixture
@@ -66,6 +115,30 @@ def clock():
     return FakeClock()
 
 
+def load_toml(toml: str, env: Mapping[str, str] | None = None, files: Mapping[str, str] | None = None):
+    """(cfg, secrets) for a relay.toml given as text, with the test environment under ``env``."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        for name, content in (files or {}).items():
+            (folder / name).write_text(content)
+        (folder / "relay.toml").write_text(toml)
+        return load_config(folder / "relay.toml", {**TEST_ENV, **(env or {})})
+
+
+def servers(toml: str, *stubs: Stub, env: Mapping[str, str] | None = None, clock: Any = None) -> McpServers:
+    """The relay's MCP side alone, wired to stubs."""
+    cfg, secrets = load_toml(toml, env)
+    return McpServers(
+        cfg.server,
+        secrets,
+        ttl_seconds=cfg.tools_ttl_seconds,
+        clock=clock or FakeClock(),
+        transport_for=transport_for(*stubs),
+        max_description_chars=cfg.max_description_chars,
+        list_seconds=cfg.list_seconds,
+    )
+
+
 @dataclass
 class Relay:
     """A relay under test: the app, its fake Claude, its clock, and a client that talks to it."""
@@ -88,13 +161,35 @@ class Relay:
         return await self.http.post("/v1/turn", json=body)
 
 
+def assert_valid_history(messages: list[dict[str, Any]]) -> None:
+    """What the Messages API needs of a conversation, whatever happened in it: user first, roles
+    alternating, nothing empty, and every tool call answered in the very next message."""
+    assert messages and messages[0]["role"] == "user"
+    for earlier, later in zip(messages, messages[1:], strict=False):
+        assert earlier["role"] != later["role"], f"two {later['role']} messages in a row"
+    for index, message in enumerate(messages):
+        assert message["content"], f"message {index} is empty"
+        if message["role"] != "assistant":
+            continue
+        asked = [b["id"] for b in message["content"] if b["type"] == "tool_use"]
+        if asked:
+            assert index + 1 < len(messages), "a tool call was never answered"
+            answered = [b["tool_use_id"] for b in messages[index + 1]["content"] if b["type"] == "tool_result"]
+            assert answered == asked, f"tool calls {asked} were answered with {answered}"
+
+
 @asynccontextmanager
 async def make_relay(
-    toml: str = "", *script: Any, env: Mapping[str, str] | None = None, files: Mapping[str, str] | None = None
+    toml: str = "",
+    *script: Any,
+    stubs: Sequence[Stub] = (),
+    env: Mapping[str, str] | None = None,
+    files: Mapping[str, str] | None = None,
 ) -> AsyncIterator[Relay]:
     """A relay built from ``toml`` (a whole relay.toml) with a scripted Claude. No [access]: loopback only.
 
-    ``files`` are written beside relay.toml first, for a test that names its own prompt file.
+    ``stubs`` stand in for the MCP servers the toml names. ``files`` are written beside relay.toml
+    first, for a test that names its own prompt file.
     """
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)
@@ -103,6 +198,8 @@ async def make_relay(
         (folder / "relay.toml").write_text(toml)
         cfg, secrets = load_config(folder / "relay.toml", {**TEST_ENV, **(env or {})})
         claude, clock = FakeClaude(*script), FakeClock()
-        app = create_app(cfg, secrets, claude=claude, clock=clock)
+        app = create_app(cfg, secrets, claude=claude, clock=clock, transport_for=transport_for(*stubs))
         async with client_for(app) as http:
-            yield Relay(http=http, claude=claude, clock=clock, app=app, dir=folder)
+            yield Relay(
+                http=http, claude=claude, clock=clock, app=app, dir=folder, stubs={stub.name: stub for stub in stubs}
+            )

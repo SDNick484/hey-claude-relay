@@ -22,6 +22,7 @@ from .claude import AnthropicClaude, ClaudeClient
 from .config import RelayConfig, Secrets
 from .conversations import Clock, ConversationStore, Stored, TurnLedger
 from .errors import BAD_REQUEST, INTERNAL, NOT_UNDERSTOOD, RATE_LIMITED, RelayError, error_body, error_response
+from .mcp_client import McpServers, TransportFor
 from .turn import TurnRunner
 
 log = logging.getLogger(__name__)
@@ -191,19 +192,29 @@ def create_app(
     verifier: AccessVerifier | None = None,
     insecure_no_auth: bool = False,
     claude: ClaudeClient | None = None,
+    transport_for: TransportFor | None = None,
 ) -> Starlette:
     """Build the app. Later arguments are keyword-only so tests can swap in fakes one at a time.
 
     With an ``[access]`` table every request but ``GET /healthz`` needs a verified assertion
     (``verifier`` is built from the config unless a test passes its own). Without one the app
     serves this machine only, unless ``insecure_no_auth`` says otherwise. ``claude`` is the
-    Anthropic API unless a test passes a fake.
+    Anthropic API unless a test passes a fake, and ``transport_for`` wires MCP servers to stubs.
     """
     if verifier is None and cfg.access is not None:
         verifier = AccessVerifier(AccessPolicy.from_config(cfg.access))
     if claude is None:
         claude = AnthropicClaude.from_secrets(cfg, secrets)
     conversations = ConversationStore(idle_seconds=cfg.idle_minutes * 60, max_turns=cfg.max_turns, clock=clock)
+    servers = McpServers(
+        cfg.server,
+        secrets,
+        ttl_seconds=cfg.tools_ttl_seconds,
+        clock=clock,
+        transport_for=transport_for,
+        max_description_chars=cfg.max_description_chars,
+        list_seconds=cfg.list_seconds,
+    )
     app = Starlette(
         routes=[
             Route(HEALTH_PATH, _healthz, methods=["GET"]),
@@ -217,7 +228,8 @@ def create_app(
     app.state.conversations = conversations
     app.state.ledger = TurnLedger(ttl_seconds=TURN_ID_TTL_SECONDS, clock=clock)
     app.state.limiter = TurnLimiter(cfg.turns_per_minute, clock)
-    app.state.runner = TurnRunner(cfg, claude, conversations, clock=clock)
+    app.state.servers = servers
+    app.state.runner = TurnRunner(cfg, claude, conversations, servers, clock=clock)
     # Added last, runs first: CrashGuard wraps the auth check, which wraps the routes.
     app.add_middleware(AccessMiddleware, verifier=verifier, local_only=verifier is None and not insecure_no_auth)
     app.add_middleware(CrashGuard)
