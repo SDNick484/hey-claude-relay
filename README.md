@@ -8,8 +8,8 @@ the driver said and speaks what comes back. Anything that can send a line of tex
 The relay is where the server list, the API key, the voice rules and the safety rules live, so
 adding an MCP server is a config edit here and no client changes.
 
-> **Status:** under construction, one milestone per pull request. Today the relay loads its
-> configuration, answers `/healthz`, and verifies who is calling; it does not run turns yet. The design is in
+> **Status:** under construction, one milestone per pull request. Today the relay verifies who
+> is calling and holds a conversation with Claude; it does not call tools on MCP servers yet. The design is in
 > [`docs/superpowers/specs/`](docs/superpowers/specs/2026-11-23-hey-claude-car-design.md) and
 > the build plan in [`docs/superpowers/plans/`](docs/superpowers/plans/2026-11-23-hey-claude-relay.md).
 
@@ -88,6 +88,7 @@ With [uv](https://docs.astral.sh/uv/):
 uv sync
 cp relay.example.toml relay.toml
 vim relay.toml
+export ANTHROPIC_API_KEY    # set it in your shell first; never write it in a file in this repository
 uv run hey-claude-relay check-config
 uv run hey-claude-relay serve          # 127.0.0.1:8787
 curl -s http://127.0.0.1:8787/healthz
@@ -97,11 +98,17 @@ In Docker (Alpine):
 
 ```sh
 docker build --build-arg GIT_COMMIT="$(git rev-parse HEAD)" -t hey-claude-relay .
-docker run --rm -p 127.0.0.1:8787:8787 -v "$PWD/relay.toml:/config/relay.toml:ro" hey-claude-relay
+docker run --rm -p 127.0.0.1:8787:8787 --env-file .env \
+  -v "$PWD/relay.toml:/config/relay.toml:ro" hey-claude-relay
 ```
 
-`relay.toml` holds settings; secrets come from the environment and are never written to a file
-in this repository. `relay.example.toml` documents every key.
+`relay.toml` holds settings; secrets come from the environment (`ANTHROPIC_API_KEY` so far; `.env`
+is gitignored) and are never written to a file in this repository. `relay.example.toml` documents
+every key.
+
+Turns are logged one line each: conversation (first eight characters), client, outcome, rounds,
+tools and duration. What was said and what was answered are logged only at
+`RELAY_LOG_LEVEL=debug`, and a turn marked `secret` is never logged at any level.
 
 Without an `[access]` table the relay serves this machine only: it refuses to start on any
 address but loopback, and refuses any request that a proxy forwarded or that is addressed to

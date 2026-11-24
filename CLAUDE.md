@@ -40,12 +40,23 @@ with `relay.example.toml` and checks `/healthz`.
 - **Alpine and OpenRC.** The image is `python:3.13-alpine`; nothing may assume systemd. Editor
   instructions in docs use `vim`.
 - Tests first: write the failing test, watch it fail, then write the code.
+- **History is append-only.** A conversation keeps the system prompt and tool list it started with,
+  and earlier messages are never edited: the API ties the model's thinking blocks to all three.
+  The only removals are whole turns from the end (a turn that came to nothing) and `trim`, which
+  also strips thinking blocks from what it keeps.
+- Test helpers: `tests/conftest.py` (`make_relay`, `FakeClock`), `tests/fakes.py` (`FakeClaude`, `say`,
+  `use`, `refuse`), `tests/keys.py` (`mint`).
 
 ## Layout
 
 - `src/hey_claude_relay/config.py`: `relay.toml` and environment into `RelayConfig` and `Secrets`
 - `src/hey_claude_relay/errors.py`: the `{"error": {"code", "spoken"}}` shape
-- `src/hey_claude_relay/app.py`: `create_app`, routes, the crash guard
+- `src/hey_claude_relay/app.py`: `create_app`, routes, request validation, the turn log line, the rate limit,
+  the crash guard
+- `src/hey_claude_relay/turn.py`: `TurnRunner`, one turn from text to spoken reply
+- `src/hey_claude_relay/claude.py`: the Claude API adapter and its error mapping
+- `src/hey_claude_relay/conversations.py`: conversations in memory, and `turn_id` replay
+- `src/hey_claude_relay/speech.py`: `strip_markdown`
 - `src/hey_claude_relay/access.py`: Access assertion check and the auth middleware (a port of part of
   `mcp-server-shared`'s `remote.py`; the header comment names the upstream commit)
 - `src/hey_claude_relay/logsafe.py`: the log filter that masks secret values

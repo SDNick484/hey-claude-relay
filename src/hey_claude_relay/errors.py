@@ -31,6 +31,11 @@ UPSTREAM_ERROR = "I couldn't reach Claude just now."
 RATE_LIMITED = "I'm getting too many requests. Give me a minute."
 INTERNAL = "Something went wrong on my end."
 
+# Replies that are not errors: the turn was answered, just not by the model.
+REFUSAL = "I can't help with that one."
+EMPTY = "I don't have an answer for that."
+LOST = "I lost track of that request, so nothing was done. Ask again if you still want it."
+
 
 class RelayError(Exception):
     """A failure with a code for the client and a line for the driver.

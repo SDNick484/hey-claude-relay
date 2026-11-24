@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .access import check_bind
 from .app import create_app
+from .claude import AnthropicClaude
 from .config import ConfigError, RelayConfig, Secrets, load_config, prompt_text
 from .logsafe import configure_logging
 
@@ -70,6 +71,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         cfg, secrets = load_config(path, env)
         prompt_text(cfg)  # a prompt file that cannot be read should stop startup, not the first turn
+        AnthropicClaude.from_secrets(cfg, secrets)  # so does a missing API key
         if args.command == "check-config":
             print(f"ok: {path}")
             return 0

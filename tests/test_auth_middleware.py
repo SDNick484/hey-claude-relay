@@ -17,13 +17,13 @@ def access_app():
     """The relay behind Access: the test key stands in for Cloudflare's."""
     cfg = RelayConfig(access=AccessConfig(team_domain=TEAM, audiences=(AUD,), service_tokens=(CALLER,)))
     verifier = AccessVerifier(AccessPolicy.from_config(cfg.access), resolver)
-    return create_app(cfg, Secrets(), verifier=verifier)
+    return create_app(cfg, Secrets(anthropic_api_key="test-key-not-real"), verifier=verifier)
 
 
 @pytest.fixture
 def local_app():
     """No [access] table: this machine only."""
-    return create_app(RelayConfig(), Secrets())
+    return create_app(RelayConfig(), Secrets(anthropic_api_key="test-key-not-real"))
 
 
 async def post(app, headers=None):
@@ -117,7 +117,7 @@ async def test_without_access_any_other_host_is_refused(local_app, host):
 
 
 async def test_insecure_no_auth_is_an_explicit_opt_out():
-    app = create_app(RelayConfig(), Secrets(), insecure_no_auth=True)
+    app = create_app(RelayConfig(), Secrets(anthropic_api_key="test-key-not-real"), insecure_no_auth=True)
     assert (await post(app, {"X-Forwarded-For": "192.0.2.7", "Host": "relay.example.com"})).status_code == 204
 
 
@@ -132,7 +132,8 @@ def test_serving_beyond_loopback_needs_access():
         check_bind(loopback, access=False, insecure_no_auth=False)
 
 
-def test_serve_refuses_an_open_bind_without_access(tmp_path, capsys):
+def test_serve_refuses_an_open_bind_without_access(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     cfg = tmp_path / "relay.toml"
     cfg.write_text("")
     assert main(["serve", "--config", str(cfg), "--bind", "0.0.0.0"]) == 2
