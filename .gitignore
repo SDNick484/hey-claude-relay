@@ -1,5 +1,6 @@
 # Real configuration and secrets never go in git; relay.example.toml is the template.
 /relay.toml
+/compose.yaml
 /voice.md
 .env
 .env.*

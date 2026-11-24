@@ -74,3 +74,5 @@ with `relay.example.toml` and checks `/healthz`.
 - `src/hey_claude_relay/logsafe.py`: the log filter that masks secret values
 - `src/hey_claude_relay/__main__.py`: `serve`, `check-config`
 - `src/hey_claude_relay/prompts/voice.md`: the default voice instructions, shipped in the package
+- `scripts/smoke.sh`: curl smoke test for a running relay (plain POSIX sh; `tests/test_smoke_script.py` runs it)
+- `relay.example.toml`, `compose.example.yaml`: the templates; they must stay loadable and generic

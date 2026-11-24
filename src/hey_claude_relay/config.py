@@ -197,7 +197,8 @@ class GateSettings(_Model):
 
 class RelayConfig(_Model):
     model: str = Field(default="claude-sonnet-5-5", min_length=1)
-    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = "low"
+    # "none" sends no effort at all, for a model that has no such setting.
+    effort: Literal["low", "medium", "high", "xhigh", "max", "none"] | None = "low"
     max_tokens: int = Field(default=16000, gt=0)
     idle_minutes: float = Field(default=15, gt=0, allow_inf_nan=False)
     max_turns: int = Field(default=40, ge=2)

@@ -74,7 +74,7 @@ class AnthropicClaude:
             "messages": list(messages),
             "cache_control": {"type": "ephemeral"},
         }
-        if self.cfg.effort is not None:
+        if self.cfg.effort not in (None, "none"):
             request["output_config"] = {"effort": self.cfg.effort}
         if tools:
             request["tools"] = list(tools)
