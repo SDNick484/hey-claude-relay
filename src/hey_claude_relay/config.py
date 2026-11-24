@@ -7,7 +7,9 @@ never repeat a value, so a secret pasted into the wrong place does not end up in
 
 from __future__ import annotations
 
+import fnmatch
 import re
+import string
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -29,6 +31,29 @@ _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 # The relay's own secrets. A server's token_env may not name one, or it would be sent to that server.
 RESERVED_VARIABLES = ("ANTHROPIC_API_KEY", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "RELAY_PASSPHRASE_HASH")
 _LOOPBACK_URL = re.compile(r"^http://(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(/|$)")
+
+
+_FIELD_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def template_fields(template: str) -> list[str] | None:
+    """The argument names a ``service_from`` template reads, or None if it is not a safe template.
+
+    Safe means: at least one ``{name}`` field, every field a plain argument name, and no
+    indexing, attribute access, conversion or format spec, so rendering can only ever copy the
+    text of top-level string arguments.
+    """
+    names: list[str] = []
+    try:
+        for _, name, spec, conversion in string.Formatter().parse(template):
+            if name is None:
+                continue
+            if not _FIELD_NAME.fullmatch(name) or spec or conversion:
+                return None
+            names.append(name)
+    except ValueError:
+        return None
+    return names or None
 
 
 class ConfigError(ValueError):
@@ -76,6 +101,32 @@ class ServerConfig(_Model):
     tools: tuple[str, ...] = ()  # allow-list of tool names, as globs; empty allows everything not denied
     deny: tuple[str, ...] = ()  # tool names never offered, as globs
     timeout_seconds: float = Field(default=20, gt=0, allow_inf_nan=False)
+    # The relay's own rules for a server whose tools are too broad to allow or deny by name: one
+    # tool that can call any "service". service_from says which tool that is and how to read the
+    # service out of a call's arguments, e.g. { ha_call_service = "{domain}.{service}" }. A call
+    # on such a tool whose service cannot be read is refused.
+    service_from: dict[str, str] = Field(default_factory=dict)
+    allow_services: tuple[str, ...] = ()  # globs; when set, any other service is refused
+    deny_services: tuple[str, ...] = ()  # globs; always refused, whatever the allow-list says
+
+    @field_validator("service_from")
+    @classmethod
+    def _safe_templates(cls, value: dict[str, str]) -> dict[str, str]:
+        for tool, template in value.items():
+            if template_fields(template) is None:
+                raise ValueError(
+                    f"the template for {tool!r} must be made of plain argument names in braces, "
+                    'such as "{domain}.{service}"'
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _service_lists_need_service_from(self) -> ServerConfig:
+        if (self.allow_services or self.deny_services) and not self.service_from:
+            raise ValueError(
+                "allow_services and deny_services need service_from, which says how to read a service out of a call"
+            )
+        return self
 
     @field_validator("url")
     @classmethod
@@ -98,6 +149,50 @@ class ServerConfig(_Model):
         if self.auth == "cf-service-token" and not (self.url.startswith("https://") or _LOOPBACK_URL.match(self.url)):
             raise ValueError('auth = "cf-service-token" needs an https:// url')
         return self
+
+
+class GateMatch(_Model):
+    """Which calls a gate holds: a tool (a glob), and optionally a service (a glob)."""
+
+    tool: str = Field(min_length=1)
+    service: str | None = Field(default=None, min_length=1)
+
+
+class GateConfig(_Model):
+    """A step-up rule: a matching call is held by the relay until every check in ``require`` passes."""
+
+    server: str
+    match: GateMatch
+    require: tuple[Literal["near-home", "passphrase"], ...] = Field(min_length=1)
+
+    @field_validator("require")
+    @classmethod
+    def _each_check_once(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("names a check twice")
+        return value
+
+
+class NearHomeConfig(_Model):
+    """How the relay finds out for itself whether the owner is near home: one tool call.
+
+    ``result_path`` is where in the tool's JSON answer the state is ("data.state"), and
+    ``states`` are the values that count as near.
+    """
+
+    server: str
+    tool: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    result_path: str = Field(pattern=r"^[^.\s]+(\.[^.\s]+)*$")
+    states: Names
+
+
+class GateSettings(_Model):
+    """Timing for gated actions."""
+
+    hold_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)  # how long a held call waits for the passphrase
+    max_misses: int = Field(default=3, ge=1)  # wrong passphrases before every gated action is locked
+    lockout_minutes: float = Field(default=15, gt=0, allow_inf_nan=False)
 
 
 class RelayConfig(_Model):
@@ -124,6 +219,34 @@ class RelayConfig(_Model):
     max_description_chars: int = Field(default=2000, ge=0)  # a longer tool description is cut there
     access: AccessConfig | None = None
     server: tuple[ServerConfig, ...] = ()
+    gate: tuple[GateConfig, ...] = ()
+    near_home: NearHomeConfig | None = None
+    gates: GateSettings = GateSettings()
+
+    @model_validator(mode="after")
+    def _near_home_can_be_checked(self) -> RelayConfig:
+        names = {server.name for server in self.server}
+        if self.near_home is not None and self.near_home.server not in names:
+            raise ValueError(f"near_home names server {self.near_home.server!r}, which is not configured")
+        if self.near_home is None and any("near-home" in gate.require for gate in self.gate):
+            raise ValueError("a gate requires near-home, which needs a [near_home] table saying how to check it")
+        return self
+
+    @model_validator(mode="after")
+    def _gates_can_be_enforced(self) -> RelayConfig:
+        servers = {server.name: server for server in self.server}
+        for gate in self.gate:
+            server = servers.get(gate.server)
+            if server is None:
+                raise ValueError(f"a gate names server {gate.server!r}, which is not configured")
+            reads_a_service = any(fnmatch.fnmatchcase(tool, gate.match.tool) for tool in server.service_from)
+            if gate.match.service is not None and not reads_a_service:
+                # Without it the relay could not tell which calls the gate is for, and none would be held.
+                raise ValueError(
+                    f"a gate on server {gate.server!r} matches a service, but that server's service_from "
+                    f"has no entry for a tool matching {gate.match.tool!r}"
+                )
+        return self
 
     @model_validator(mode="after")
     def _a_turn_fits_what_clients_wait(self) -> RelayConfig:
@@ -184,6 +307,16 @@ def load_config(path: Path, env: Mapping[str, str]) -> tuple[RelayConfig, Secret
         raise ConfigError(f"{path}: {_explain(exc)}") from None
     if cfg.prompt_file is not None and not cfg.prompt_file.is_absolute():
         cfg = cfg.model_copy(update={"prompt_file": path.parent / cfg.prompt_file})
+    passphrase_hash = _env(env, "RELAY_PASSPHRASE_HASH")
+    if any("passphrase" in gate.require for gate in cfg.gate):
+        from .gates import check_passphrase_hash  # here, not at the top: gates imports this module
+
+        if passphrase_hash is None:
+            raise ConfigError(
+                f"{path}: a gate requires a passphrase, which needs RELAY_PASSPHRASE_HASH in the environment. "
+                "Run `hey-claude-relay hash-passphrase` to make one."
+            )
+        check_passphrase_hash(passphrase_hash)
     bearer: dict[str, str] = {}
     for server in cfg.server:
         if server.auth == "cf-service-token":
@@ -205,7 +338,7 @@ def load_config(path: Path, env: Mapping[str, str]) -> tuple[RelayConfig, Secret
         anthropic_api_key=_env(env, "ANTHROPIC_API_KEY"),
         cf_client_id=_env(env, "CF_ACCESS_CLIENT_ID"),
         cf_client_secret=_env(env, "CF_ACCESS_CLIENT_SECRET"),
-        passphrase_hash=_env(env, "RELAY_PASSPHRASE_HASH"),
+        passphrase_hash=passphrase_hash,
         bearer=bearer,
     )
     return cfg, secrets

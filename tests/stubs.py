@@ -33,6 +33,11 @@ class Stub:
     fail: bool = False  # True: answer every request the way Access answers a caller it does not admit
     hang: bool = False  # True: accept every request and never answer
 
+    @property
+    def service_calls(self) -> list[tuple[Any, Any]]:
+        """(domain, service) of each ha_call_service call that reached this stub."""
+        return [(a.get("domain"), a.get("service")) for name, a in self.calls if name == "ha_call_service"]
+
 
 class _Front:
     """Records request headers, and stands in for Access turning a caller away."""
@@ -80,6 +85,43 @@ async def sdk_stub(name: str, tools: Mapping[str, Callable[..., Any]]) -> AsyncI
     app = server.streamable_http_app(streamable_http_path="/mcp")
     async with app.router.lifespan_context(app):
         stub.app = _Front(app, stub)
+        yield stub
+
+
+@asynccontextmanager
+async def house_stub(state: str = "home", *, search: Callable[[str], str] | None = None) -> AsyncIterator[Stub]:
+    """A home-automation server in the shape of a real one: one catch-all "call a service" tool with
+    a raw escape hatch, a bulk tool whose actions are not service names, and read tools.
+
+    ``state`` is what ha_get_state reports; ``search`` supplies ha_search's answer (a place to put
+    text that tries to give orders).
+    """
+
+    def ha_call_service(
+        domain: str | None = None,
+        service: str | None = None,
+        entity_id: str | None = None,
+        data: dict[str, Any] | None = None,
+        ws_command: str | None = None,
+    ) -> str:
+        return json.dumps({"success": True})
+
+    def ha_bulk_control(operations: list[dict[str, Any]] | None = None) -> str:
+        return json.dumps({"success": True})
+
+    def ha_get_state(entity_id: str, fields: list[str] | None = None) -> str:
+        return json.dumps({"data": {"state": state}, "metadata": {"note": "times are local"}})
+
+    def ha_search(query: str) -> str:
+        return search(query) if search is not None else "[]"
+
+    tools = {
+        "ha_call_service": ha_call_service,
+        "ha_bulk_control": ha_bulk_control,
+        "ha_get_state": ha_get_state,
+        "ha_search": ha_search,
+    }
+    async with sdk_stub("house", tools) as stub:
         yield stub
 
 

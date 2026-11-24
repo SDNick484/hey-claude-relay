@@ -58,6 +58,8 @@ jobs:
           COOKBOOKS_MCP_TOKEN=placeholder-not-a-real-token
           ENV
           sed -i 's/^ *//' ci.env
+      - name: Hash a throwaway passphrase with the image's own command
+        run: printf 'a throwaway phrase for ci\n' | docker run --rm -i relay:ci hash-passphrase >> ci.env
       - name: The example configuration is usable
         run: docker run --rm --env-file ci.env -v "$PWD/relay.example.toml:/config/relay.toml:ro" relay:ci check-config
       - name: Start the relay

@@ -22,7 +22,9 @@ from .claude import AnthropicClaude, ClaudeClient
 from .config import RelayConfig, Secrets
 from .conversations import Clock, ConversationStore, Stored, TurnLedger
 from .errors import BAD_REQUEST, INTERNAL, NOT_UNDERSTOOD, RATE_LIMITED, RelayError, error_body, error_response
+from .gates import GateKeeper, NearHome
 from .mcp_client import McpServers, TransportFor
+from .policy import Policy
 from .turn import TurnRunner
 
 log = logging.getLogger(__name__)
@@ -109,8 +111,8 @@ async def _turn(request: Request) -> Response:
         if not state.limiter.allow():
             line(turn.conversation_id or "", "error:rate_limited")
             return Stored(429, error_body("rate_limited", RATE_LIMITED), keep=False)
-        if not turn.secret:
-            log.debug("heard: %s", text)
+        # What was said is not logged here, even at debug: this may be a passphrase attempt, and
+        # only the runner knows. It logs an ordinary turn's text itself.
         try:
             result = await state.runner.run(text, turn.conversation_id or None, secret=turn.secret)
         except RelayError as exc:
@@ -229,7 +231,18 @@ def create_app(
     app.state.ledger = TurnLedger(ttl_seconds=TURN_ID_TTL_SECONDS, clock=clock)
     app.state.limiter = TurnLimiter(cfg.turns_per_minute, clock)
     app.state.servers = servers
-    app.state.runner = TurnRunner(cfg, claude, conversations, servers, clock=clock)
+    app.state.keeper = GateKeeper(cfg.gates, clock)
+    app.state.runner = TurnRunner(
+        cfg,
+        claude,
+        conversations,
+        servers,
+        Policy(cfg.server, cfg.gate),
+        app.state.keeper,
+        NearHome(cfg.near_home) if cfg.near_home is not None else None,
+        secrets,
+        clock=clock,
+    )
     # Added last, runs first: CrashGuard wraps the auth check, which wraps the routes.
     app.add_middleware(AccessMiddleware, verifier=verifier, local_only=verifier is None and not insecure_no_auth)
     app.add_middleware(CrashGuard)

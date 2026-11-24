@@ -50,5 +50,52 @@ token_env = "COOKBOOKS_MCP_TOKEN"
 name = "home-assistant"
 url = "https://ha-mcp.example.com/mcp"
 auth = "cf-service-token"
-# A large server: offer only what a voice turn needs.
+# A large server: offer only what a voice turn needs. ha_bulk_control is left out on purpose:
+# its actions ("on", "off") are not service names, so the rules below could not see through it.
 tools = ["ha_search", "ha_get_state", "ha_get_overview", "ha_call_service"]
+# ha_call_service can call anything, so the relay reads the service out of each call and applies
+# its own lists. A call whose service cannot be read (the tool's raw ws_command form, for one)
+# is refused.
+service_from = { ha_call_service = "{domain}.{service}" }
+# Only these may be called by voice. Globs. Everything else is refused, which is what keeps
+# near-misses out: cover.toggle, lock.open, homeassistant.turn_on, any script or scene.
+# Think before adding a domain: a switch, a scene or a script does whatever you wired it to do.
+allow_services = [
+    "light.*", "fan.*", "media_player.*", "climate.set_*",
+    "cover.close_cover", "cover.stop_cover", "cover.open_cover",
+    "lock.lock",
+]
+# Never by voice, whatever the allow-list says.
+deny_services = ["lock.unlock", "lock.open", "alarm_control_panel.*"]
+
+# --- Gates ---------------------------------------------------------------------------------
+# A gate is a step-up: a call that matches is held by the relay, not run, until every check in
+# `require` passes. The checks are the relay's own code, so nothing Claude reads (a misheard
+# command, text inside a tool result) can talk its way past them.
+#
+#   "near-home"    the relay asks a server where you are (see [near_home]); if you are not
+#                  near, the call is refused and no passphrase is asked for
+#   "passphrase"   the reply is "Say your passphrase."; the next thing said on that
+#                  conversation is compared with RELAY_PASSPHRASE_HASH and goes nowhere else
+#
+# What a gate is not: protection from someone who has heard the phrase in the car. The real
+# credential is the caller's Access service token.
+
+[[gate]]
+server = "home-assistant"
+match = { tool = "ha_call_service", service = "cover.open_cover" }
+require = ["near-home", "passphrase"]
+
+# How the relay finds out for itself whether you are near home: one tool call, where in its
+# JSON answer the state is, and which states count as near.
+[near_home]
+server = "home-assistant"
+tool = "ha_get_state"
+arguments = { entity_id = "person.example", fields = ["state"] }
+result_path = "data.state"
+states = ["home"]                      # add a wider "arriving" zone here if you define one
+
+[gates]
+hold_seconds = 30                      # how long a held call waits for the passphrase
+max_misses = 3                         # wrong passphrases before every gated action is locked
+lockout_minutes = 15

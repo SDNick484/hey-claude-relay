@@ -8,10 +8,8 @@ the driver said and speaks what comes back. Anything that can send a line of tex
 The relay is where the server list, the API key, the voice rules and the safety rules live, so
 adding an MCP server is a config edit here and no client changes.
 
-> **Status:** under construction, one milestone per pull request. Today the relay verifies who
-> is calling, holds a conversation with Claude, and runs tools on the MCP servers it is given.
-> The safety rules for those tools (denied services, gates behind a passphrase) come next;
-> until they are in, do not point it at a server that can do anything you would mind. The design is in
+> **Status:** feature-complete, one milestone per pull request; the deployment guide is the last
+> piece. The design is in
 > [`docs/superpowers/specs/`](docs/superpowers/specs/2026-11-23-hey-claude-car-design.md) and
 > the build plan in [`docs/superpowers/plans/`](docs/superpowers/plans/2026-11-23-hey-claude-relay.md).
 
@@ -112,6 +110,7 @@ never written to a file in this repository. `relay.example.toml` documents every
 | `ANTHROPIC_API_KEY` | the key turns are billed to |
 | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | the relay's own Access service token, sent to servers with `auth = "cf-service-token"` |
 | the name in a server's `token_env` | that server's bearer token, for `auth = "bearer"` |
+| `RELAY_PASSPHRASE_HASH` | the line printed by `hey-claude-relay hash-passphrase`; needed when a gate requires a passphrase |
 
 ## How a turn runs
 
@@ -126,6 +125,53 @@ never written to a file in this repository. `relay.example.toml` documents every
 
 A server that cannot be reached does not fail the turn: its tools are missing, or its calls
 come back as errors, and Claude says it could not reach it.
+
+## What a voice may and may not do
+
+Two layers. The servers enforce what an automated caller may do at all (for servers built on
+`mcp-server-shared`, the tiers in `MCP_AUTOMATION_TIERS`). The relay adds rules of its own,
+because only it knows the caller is a voice in a car. They are code: every tool call Claude asks
+for is checked before anything is sent, and nothing Claude reads can change the answer.
+
+- **Tool lists.** Per server, `tools` is an allow-list and `deny` a deny-list, both globs. A tool
+  that is not offered is refused even if Claude asks for it by name.
+- **Services.** Some servers have one tool that can call anything (Home Assistant's
+  `ha_call_service`). `service_from` tells the relay which tool that is and how to read the
+  service out of a call, e.g. `{ ha_call_service = "{domain}.{service}" }`. Then:
+  - `deny_services` are refused, always.
+  - `allow_services`, when set, are the only services allowed. Use it. A deny-list alone is easy
+    to walk around: `cover.toggle` is not `cover.open_cover`, `lock.open` is not `lock.unlock`.
+  - A call whose service cannot be read (a raw escape hatch, a missing field) is refused.
+  - Letter case and stray spaces are ignored when matching.
+  - Leave tools whose actions are not services (such as `ha_bulk_control`) off the `tools` list:
+    these rules cannot see through them.
+- **Gates.** A `[[gate]]` names a tool call and the checks it needs. A matching call is held by
+  the relay, not run:
+  1. `near-home`: the relay asks a server where you are (`[near_home]`). Not near means a spoken
+     refusal and no passphrase prompt.
+  2. `passphrase`: the reply is "Say your passphrase." with `expect_secret: true`. The next
+     message on that conversation is the attempt, whatever it says. It is normalised (case,
+     punctuation, spacing, digits as words), compared in constant time with the salted hash in
+     `RELAY_PASSPHRASE_HASH`, and goes nowhere else: not to Claude, not into the conversation,
+     not into any log at any level. A match runs the held call once. A miss drops it.
+  - The held call expires after 30 seconds. A message that arrives later is still swallowed,
+    not compared, and answered with "that took too long".
+  - "Cancel", "never mind", "stop" or "no" drops the call without counting as a miss.
+  - Three misses lock every gated action for 15 minutes.
+  - One call can be held per conversation.
+
+What a gate is for: stopping a misheard command, or text inside a tool result, from doing
+something that matters. What it is not: protection from someone who has heard the phrase said
+in the car. The real credential is the caller's Access service token, and the speech recogniser
+hears the phrase too.
+
+To make the hash (the phrase is never an argument, so it does not land in shell history):
+
+```sh
+uv run hey-claude-relay hash-passphrase          # or: docker run --rm -it hey-claude-relay hash-passphrase
+```
+
+Choose three or more words, no numbers, and nothing you would say in the car for another reason.
 
 Turns are logged one line each: conversation (first eight characters), client, outcome, rounds,
 tools and duration. What was said and what was answered are logged only at
