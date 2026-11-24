@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from conftest import EXAMPLE_ENV
-from hey_claude_relay.config import ConfigError, load_config
+from hey_claude_relay.config import ConfigError, load_config, prompt_text
 
 
 def load(tmp_path, text, env=None):
@@ -65,3 +65,24 @@ def test_a_bad_value_names_the_key_and_not_the_value(tmp_path):
 def test_blank_environment_values_count_as_unset(tmp_path):
     _, secrets = load(tmp_path, "", {"ANTHROPIC_API_KEY": "  "})
     assert secrets.anthropic_api_key is None
+
+
+def test_without_prompt_file_the_bundled_prompt_is_used(tmp_path):
+    cfg, _ = load(tmp_path, "")
+    assert cfg.prompt_file is None
+    assert "read aloud" in prompt_text(cfg)
+
+
+def test_a_custom_prompt_file_is_read(tmp_path):
+    (tmp_path / "voice.md").write_text("Speak like a pirate.\n")
+    cfg, _ = load(tmp_path, 'prompt_file = "voice.md"\n')
+    assert prompt_text(cfg) == "Speak like a pirate."
+
+
+@pytest.mark.parametrize("content", [None, "", "  \n"])
+def test_a_missing_or_empty_custom_prompt_is_a_config_error(tmp_path, content):
+    if content is not None:
+        (tmp_path / "voice.md").write_text(content)
+    cfg, _ = load(tmp_path, 'prompt_file = "voice.md"\n')
+    with pytest.raises(ConfigError, match="voice.md"):
+        prompt_text(cfg)

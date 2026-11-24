@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The token gets nothing it doesn't need: this workflow only reads the checkout.
+permissions:
+  contents: read
+
+# One run per branch: a push to a PR branch cancels the run for the previous push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.13 is what the Docker image runs; 3.14 is ahead of it, so a break there is a heads-up.
+        python-version: ["3.13", "3.14"]
+    env:
+      UV_LOCKED: "1" # every uv command fails if uv.lock is out of step with pyproject.toml
+    steps:
+      # Actions pinned to a commit, not a tag: a tag can be moved. The comment is the version the
+      # SHA was taken from; Dependabot (.github/dependabot.yml) bumps both together.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.9"
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest --cov --cov-report=term-missing
+
+  # The image as it will be deployed: built on Alpine (musl), started with the example
+  # configuration, and asked the two things that need no credentials.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the image
+        run: docker build --build-arg GIT_COMMIT="$GITHUB_SHA" -t relay:ci .
+      - name: The example configuration is usable
+        run: docker run --rm -v "$PWD/relay.example.toml:/config/relay.toml:ro" relay:ci check-config
+      - name: Start the relay
+        run: |
+          docker run -d --name relay -p 127.0.0.1:8787:8787 \
+            -v "$PWD/relay.example.toml:/config/relay.toml:ro" relay:ci
+      - name: /healthz answers and names this commit
+        run: |
+          out=""
+          for _ in $(seq 1 30); do
+            if out=$(curl -fsS http://127.0.0.1:8787/healthz); then break; fi
+            sleep 1
+          done
+          echo "$out"
+          echo "$out" | grep -q '"status":"ok"'
+          echo "$out" | grep -q "$GITHUB_SHA"
+      - name: A turn without credentials is not answered
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+            -d '{"turn_id":"ci","text":"hello"}' http://127.0.0.1:8787/v1/turn)
+          echo "POST /v1/turn without credentials -> $code"
+          test "$code" != "200"
+      - name: Container log
+        if: always()
+        run: docker logs relay

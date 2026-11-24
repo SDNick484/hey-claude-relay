@@ -11,6 +11,7 @@ import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from importlib import resources
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -52,7 +53,9 @@ class RelayConfig(_Model):
     max_tokens: int = Field(default=16000, gt=0)
     idle_minutes: float = Field(default=15, gt=0)
     max_turns: int = Field(default=40, ge=2)
-    prompt_file: Path = Path("prompts/voice.md")
+    # The voice instructions. Unset: the prompt that ships with the relay. Set: your own file,
+    # relative to relay.toml, read when each conversation starts so it can be edited in place.
+    prompt_file: Path | None = None
     max_rounds: int = Field(default=8, ge=1)
     turn_seconds: float = Field(default=45, gt=0)
     wrapup_seconds: float = Field(default=10, gt=0)
@@ -104,7 +107,7 @@ def load_config(path: Path, env: Mapping[str, str]) -> tuple[RelayConfig, Secret
         cfg = RelayConfig.model_validate(data)
     except ValidationError as exc:
         raise ConfigError(f"{path}: {_explain(exc)}") from None
-    if not cfg.prompt_file.is_absolute():
+    if cfg.prompt_file is not None and not cfg.prompt_file.is_absolute():
         cfg = cfg.model_copy(update={"prompt_file": path.parent / cfg.prompt_file})
     secrets = Secrets(
         anthropic_api_key=_env(env, "ANTHROPIC_API_KEY"),
@@ -113,3 +116,16 @@ def load_config(path: Path, env: Mapping[str, str]) -> tuple[RelayConfig, Secret
         passphrase_hash=_env(env, "RELAY_PASSPHRASE_HASH"),
     )
     return cfg, secrets
+
+
+def prompt_text(cfg: RelayConfig) -> str:
+    """The voice instructions: ``cfg.prompt_file`` if set, else the prompt that ships with the relay."""
+    if cfg.prompt_file is None:
+        return resources.files(__package__).joinpath("prompts", "voice.md").read_text(encoding="utf-8").strip()
+    try:
+        text = cfg.prompt_file.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ConfigError(f"prompt_file {cfg.prompt_file}: cannot be read ({exc.strerror}).") from exc
+    if not text:
+        raise ConfigError(f"prompt_file {cfg.prompt_file}: is empty.")
+    return text

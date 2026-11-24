@@ -10,6 +10,11 @@ model = "claude-sonnet-5-5"   # a faster model is a one-line change
 effort = "low"                # how hard the model thinks; low keeps replies quick
 idle_minutes = 15             # a conversation is forgotten after this long without a turn
 
+# The voice instructions. Leave this out to use the prompt that ships with the relay. To change
+# them, put your own file next to relay.toml and name it here; it is read when each conversation
+# starts, so an edit needs no restart.
+# prompt_file = "voice.md"
+
 # The Cloudflare Access application in front of the relay, and the service tokens allowed to
 # call it. With no [access] table the relay serves this machine only.
 [access]

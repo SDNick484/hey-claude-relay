@@ -33,3 +33,12 @@ def test_listen_address_defaults_and_overrides():
 def test_a_bad_port_is_a_config_error(port):
     with pytest.raises(ConfigError, match="RELAY_PORT"):
         listen_address(None, None, {"RELAY_PORT": port})
+
+
+def test_check_config_reads_the_prompt_file_too(tmp_path, capsys):
+    cfg = tmp_path / "relay.toml"
+    cfg.write_text('prompt_file = "voice.md"\n')
+    assert main(["check-config", "--config", str(cfg)]) == 2
+    assert "voice.md" in capsys.readouterr().err
+    (tmp_path / "voice.md").write_text("Be brief.\n")
+    assert main(["check-config", "--config", str(cfg)]) == 0

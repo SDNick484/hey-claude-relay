@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .app import create_app
-from .config import ConfigError, RelayConfig, Secrets, load_config
+from .config import ConfigError, RelayConfig, Secrets, load_config, prompt_text
 from .logsafe import configure_logging
 
 DEFAULT_BIND = "127.0.0.1"
@@ -63,6 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     path = Path(args.config or env.get("RELAY_CONFIG") or "relay.toml")
     try:
         cfg, secrets = load_config(path, env)
+        prompt_text(cfg)  # a prompt file that cannot be read should stop startup, not the first turn
         if args.command == "check-config":
             print(f"ok: {path}")
             return 0
