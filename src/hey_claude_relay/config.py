@@ -7,7 +7,9 @@ never repeat a value, so a secret pasted into the wrong place does not end up in
 
 from __future__ import annotations
 
+import fnmatch
 import re
+import string
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -26,6 +28,29 @@ from pydantic import (
 )
 
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+
+
+_FIELD_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def template_fields(template: str) -> list[str] | None:
+    """The argument names a ``service_from`` template reads, or None if it is not a safe template.
+
+    Safe means: at least one ``{name}`` field, every field a plain argument name, and no
+    indexing, attribute access, conversion or format spec, so rendering can only ever copy the
+    text of top-level string arguments.
+    """
+    names: list[str] = []
+    try:
+        for _, name, spec, conversion in string.Formatter().parse(template):
+            if name is None:
+                continue
+            if not _FIELD_NAME.fullmatch(name) or spec or conversion:
+                return None
+            names.append(name)
+    except ValueError:
+        return None
+    return names or None
 
 
 class ConfigError(ValueError):
@@ -73,6 +98,32 @@ class ServerConfig(_Model):
     tools: tuple[str, ...] = ()  # allow-list of tool names, as globs; empty allows everything not denied
     deny: tuple[str, ...] = ()  # tool names never offered, as globs
     timeout_seconds: float = Field(default=20, gt=0, allow_inf_nan=False)
+    # The relay's own rules for a server whose tools are too broad to allow or deny by name: one
+    # tool that can call any "service". service_from says which tool that is and how to read the
+    # service out of a call's arguments, e.g. { ha_call_service = "{domain}.{service}" }. A call
+    # on such a tool whose service cannot be read is refused.
+    service_from: dict[str, str] = Field(default_factory=dict)
+    allow_services: tuple[str, ...] = ()  # globs; when set, any other service is refused
+    deny_services: tuple[str, ...] = ()  # globs; always refused, whatever the allow-list says
+
+    @field_validator("service_from")
+    @classmethod
+    def _safe_templates(cls, value: dict[str, str]) -> dict[str, str]:
+        for tool, template in value.items():
+            if template_fields(template) is None:
+                raise ValueError(
+                    f"the template for {tool!r} must be made of plain argument names in braces, "
+                    'such as "{domain}.{service}"'
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _service_lists_need_service_from(self) -> ServerConfig:
+        if (self.allow_services or self.deny_services) and not self.service_from:
+            raise ValueError(
+                "allow_services and deny_services need service_from, which says how to read a service out of a call"
+            )
+        return self
 
     @field_validator("url")
     @classmethod
@@ -86,6 +137,28 @@ class ServerConfig(_Model):
         if (self.auth == "bearer") != (self.token_env is not None):
             raise ValueError('token_env names the token\'s variable; set it with auth = "bearer" and only then')
         return self
+
+
+class GateMatch(_Model):
+    """Which calls a gate holds: a tool (a glob), and optionally a service (a glob)."""
+
+    tool: str = Field(min_length=1)
+    service: str | None = Field(default=None, min_length=1)
+
+
+class GateConfig(_Model):
+    """A step-up rule: a matching call is held by the relay until every check in ``require`` passes."""
+
+    server: str
+    match: GateMatch
+    require: tuple[Literal["near-home", "passphrase"], ...] = Field(min_length=1)
+
+    @field_validator("require")
+    @classmethod
+    def _each_check_once(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("names a check twice")
+        return value
 
 
 class RelayConfig(_Model):
@@ -109,6 +182,23 @@ class RelayConfig(_Model):
     max_description_chars: int = Field(default=2000, ge=0)  # a longer tool description is cut there
     access: AccessConfig | None = None
     server: tuple[ServerConfig, ...] = ()
+    gate: tuple[GateConfig, ...] = ()
+
+    @model_validator(mode="after")
+    def _gates_can_be_enforced(self) -> RelayConfig:
+        servers = {server.name: server for server in self.server}
+        for gate in self.gate:
+            server = servers.get(gate.server)
+            if server is None:
+                raise ValueError(f"a gate names server {gate.server!r}, which is not configured")
+            reads_a_service = any(fnmatch.fnmatchcase(tool, gate.match.tool) for tool in server.service_from)
+            if gate.match.service is not None and not reads_a_service:
+                # Without it the relay could not tell which calls the gate is for, and none would be held.
+                raise ValueError(
+                    f"a gate on server {gate.server!r} matches a service, but that server's service_from "
+                    f"has no entry for a tool matching {gate.match.tool!r}"
+                )
+        return self
 
     @model_validator(mode="after")
     def _a_turn_fits_what_clients_wait(self) -> RelayConfig:

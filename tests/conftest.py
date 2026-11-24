@@ -60,6 +60,14 @@ url = "http://127.0.0.1:9003/mcp"
 auth = "none"
 tools = ["ha_search", "ha_get_state", "ha_call_service"]
 """
+# The house server with the relay's own rules on what its catch-all tool may do.
+HOUSE_POLICY = (
+    HOUSE
+    + """service_from = { ha_call_service = "{domain}.{service}" }
+allow_services = ["light.*", "cover.open_cover", "cover.close_cover"]
+deny_services = ["lock.unlock", "alarm_control_panel.alarm_disarm"]
+"""
+)
 TWO_SERVERS = (
     MATINEE
     + """

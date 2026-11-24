@@ -22,6 +22,7 @@ from .config import ConfigError, RelayConfig, prompt_text
 from .conversations import Clock, Conversation, ConversationStore
 from .errors import EMPTY, INTERNAL, LOST, OUT_OF_TIME, REFUSAL, RelayError
 from .mcp_client import McpServers, TurnSession
+from .policy import Hold, Policy, Refuse, ToolCall
 from .speech import strip_markdown
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ UNAVAILABLE_NOTE = (
 NOT_OFFERED = "No tool named {name} is available. Use only the tools you were given."
 STOPPED = "The relay stopped waiting for this tool when the turn ran out of time. It may or may not have finished."
 NOT_RUN = "Not run: the turn ran out of time first."
+NO_GATE_YET = "Refused by the relay: this action needs a check the relay cannot make yet, so nothing was done."
 # Appended to the last user message when a turn hits its round or time limit, before one last
 # call with tools switched off. The relay adds the sentence about running out of time itself.
 WRAP_UP = (
@@ -87,6 +89,7 @@ class TurnRunner:
         claude: ClaudeClient,
         store: ConversationStore,
         servers: McpServers,
+        policy: Policy,
         *,
         clock: Clock = time.monotonic,
     ) -> None:
@@ -94,6 +97,7 @@ class TurnRunner:
         self.claude = claude
         self.store = store
         self.servers = servers
+        self.policy = policy
         self._clock = clock
         self._last_prompt: str | None = None
 
@@ -260,6 +264,12 @@ class TurnRunner:
         if spec is None:
             # Claude may only use what this conversation was offered. Nothing else reaches a server.
             return _result(call.id, NOT_OFFERED.format(name=call.name), True)
+        # The relay's own rules, applied to every call before anything is sent.
+        decision = self.policy.decide(ToolCall(spec.server, spec.name, call.input))
+        if isinstance(decision, Refuse):
+            return _result(call.id, decision.message, True)
+        if isinstance(decision, Hold):
+            return _result(call.id, NO_GATE_YET, True)
         progress.ran_a_tool = True
         if spec.label not in progress.used:
             progress.used.append(spec.label)

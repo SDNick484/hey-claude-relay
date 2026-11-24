@@ -23,6 +23,7 @@ from .config import RelayConfig, Secrets
 from .conversations import Clock, ConversationStore, Stored, TurnLedger
 from .errors import BAD_REQUEST, INTERNAL, NOT_UNDERSTOOD, RATE_LIMITED, RelayError, error_body, error_response
 from .mcp_client import McpServers, TransportFor
+from .policy import Policy
 from .turn import TurnRunner
 
 log = logging.getLogger(__name__)
@@ -228,7 +229,7 @@ def create_app(
     app.state.ledger = TurnLedger(ttl_seconds=TURN_ID_TTL_SECONDS, clock=clock)
     app.state.limiter = TurnLimiter(cfg.turns_per_minute, clock)
     app.state.servers = servers
-    app.state.runner = TurnRunner(cfg, claude, conversations, servers, clock=clock)
+    app.state.runner = TurnRunner(cfg, claude, conversations, servers, Policy(cfg.server, cfg.gate), clock=clock)
     # Added last, runs first: CrashGuard wraps the auth check, which wraps the routes.
     app.add_middleware(AccessMiddleware, verifier=verifier, local_only=verifier is None and not insecure_no_auth)
     app.add_middleware(CrashGuard)
