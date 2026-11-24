@@ -8,7 +8,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from conftest import COOKBOOKS_NONE, HOUSE, MATINEE, TWO_SERVERS, servers
 from hey_claude_relay.mcp_client import MAX_RESULT_CHARS, ToolOutcome
-from stubs import legacy_stub, sdk_stub
+from stubs import GARBLED, legacy_stub, sdk_stub
 
 
 def where_is(title: str) -> str:
@@ -168,3 +168,24 @@ async def test_an_exception_inside_a_session_comes_out_as_itself():
         except Oops as exc:
             caught = exc
     assert str(caught) == "from the caller"
+
+
+async def test_a_call_whose_answer_is_lost_is_not_reported_as_never_made():
+    # The server handled the call; the relay could not read what came back. Saying "could not
+    # reach the server" would invite doing it again.
+    stub = legacy_stub("cookbooks", {"log_dinner": lambda a: GARBLED, "search_recipes": lambda a: {"hits": []}})
+    async with servers(COOKBOOKS_NONE, stub).session() as s:
+        out = await s.call("cookbooks", "log_dinner", {"query": "chili"}, timeout=5)
+        after = await s.call("cookbooks", "search_recipes", {"query": "x"}, timeout=5)
+    assert stub.calls[0] == ("log_dinner", {"query": "chili"})
+    assert out.is_error and "may or may not have gone through" in out.text and "could not reach" not in out.text
+    assert after.is_error is False  # a fresh connection takes over
+
+
+async def test_the_timeout_sentence_reads_naturally():
+    async def slow():
+        await anyio.sleep(30)
+
+    async with sdk_stub("matinee", {"slow": slow}) as stub, servers(MATINEE, stub).session() as s:
+        out = await s.call("matinee", "slow", {}, timeout=0.123456)
+    assert out.text.startswith("The relay stopped waiting for this tool after 0.12 seconds.")

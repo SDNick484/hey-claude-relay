@@ -143,6 +143,7 @@ def servers(toml: str, *stubs: Stub, env: Mapping[str, str] | None = None, clock
         clock=clock or FakeClock(),
         transport_for=transport_for(*stubs),
         max_description_chars=cfg.max_description_chars,
+        list_seconds=cfg.list_seconds,
     )
 
 

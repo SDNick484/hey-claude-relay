@@ -125,23 +125,25 @@ class TurnRunner:
         ``secret`` marks the reply to a passphrase prompt. Such a turn is never passed to Claude,
         stored or logged; with nothing held for the conversation, the answer says so.
         """
+        # The clock starts here, so asking the servers for their tools (a new conversation) and
+        # waiting behind another turn both come out of this turn's time, not on top of it.
+        deadline = anyio.current_time() + self.cfg.turn_seconds
         conversation = self.store.get(conversation_id) or await self._start()
         async with conversation.lock:
             if secret:
                 return TurnResult(conversation.id, LOST, False, (), "secret_lost", 0)
-            return await self._converse(conversation, text)
+            return await self._converse(conversation, text, deadline)
 
-    async def _converse(self, conversation: Conversation, text: str) -> TurnResult:
+    async def _converse(self, conversation: Conversation, text: str, deadline: float) -> TurnResult:
         self.store.trim(conversation)
-        progress = _Progress(mark=len(conversation.messages))
+        progress = _Progress(mark=len(conversation.messages), deadline=deadline)
         conversation.messages.append({"role": "user", "content": text})
         try:
             async with self.servers.session() as session:
                 # Two limits, and either one ends in a spoken reply, never an error: so many
                 # rounds of tools, and so many seconds for the whole loop.
                 result: TurnResult | None = None
-                progress.deadline = anyio.current_time() + self.cfg.turn_seconds
-                with anyio.move_on_after(self.cfg.turn_seconds) as limit:
+                with anyio.CancelScope(deadline=deadline) as limit:
                     result = await self._loop(conversation, session, progress)
                 if result is not None:
                     return result

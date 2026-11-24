@@ -35,8 +35,10 @@ FAILED_TTL_SECONDS = 30  # how soon a server that could not be listed is tried a
 LARGE_CATALOG = 60  # more tools than this is worth a warning: every one is sent on every turn
 
 MAX_RESULT_CHARS = 20000  # a tool result longer than this is cut before Claude sees it
-TIMED_OUT = "The relay stopped waiting for this tool after {seconds:g} seconds. It may or may not have finished."
+TIMED_OUT = "The relay stopped waiting for this tool after {seconds:.2g} seconds. It may or may not have finished."
 UNREACHABLE = "The relay could not reach the {server} server."
+# For a call that was sent and then lost: it must not read as "it never happened", or it gets repeated.
+LOST_MIDWAY = "The relay lost touch with the {server} server during this call. It may or may not have gone through."
 REFUSED = "The {server} server refused the call: {reason}"
 NOTHING = "(the tool returned nothing)"
 
@@ -103,7 +105,9 @@ class McpServers:
         clock: Clock = time.monotonic,
         transport_for: TransportFor | None = None,
         max_description_chars: int = 2000,
+        list_seconds: float = 5,
     ) -> None:
+        self._list_seconds = list_seconds
         self._servers = tuple(servers)
         self._secrets = secrets
         self._ttl = ttl_seconds
@@ -160,7 +164,7 @@ class McpServers:
 
     async def _refresh(self, server: ServerConfig) -> None:
         try:
-            with anyio.fail_after(server.timeout_seconds):
+            with anyio.fail_after(min(server.timeout_seconds, self._list_seconds)):
                 async with self.connect(server) as client:
                     tools: list[Any] = []
                     cursor: str | None = None
@@ -179,7 +183,8 @@ class McpServers:
 
     def _specs(self, server: ServerConfig, tools: Sequence[Any]) -> tuple[ToolSpec, ...]:
         specs = []
-        for tool in sorted(tools, key=lambda t: str(t.name)):
+        seen: set[str] = set()
+        for tool in sorted(tools, key=lambda t: str(t.name)):  # a stable sort: of two with one name, the first listed
             name = str(tool.name)
             if server.tools and not any(fnmatch.fnmatchcase(name, pattern) for pattern in server.tools):
                 continue
@@ -191,11 +196,25 @@ class McpServers:
                     "Tool %s is left out: %r is not a name Claude can use", f"{server.name}.{name}", claude_name
                 )
                 continue
+            # One tool Claude's API would refuse makes it refuse the whole request, on every turn.
+            # So such a tool is left out here, loudly, and the rest stay usable.
+            label = f"{server.name}.{name}"
+            if name in seen:
+                log.warning("Tool %s is listed twice by its server; the second is left out", label)
+                continue
+            schema = (
+                tool.input_schema if isinstance(tool.input_schema, dict) and tool.input_schema else {"type": "object"}
+            )
+            if schema.get("type", "object") != "object" or any(key in schema for key in ("oneOf", "anyOf", "allOf")):
+                log.warning(
+                    "Tool %s is left out: its input schema is not a plain object, which Claude cannot take", label
+                )
+                continue
+            seen.add(name)
             description = (tool.description or "").strip()
             if len(description) > self._max_description:
                 description = description[: self._max_description] + " ..."
-            schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
-            specs.append(ToolSpec(server.name, name, claude_name, description, schema or {"type": "object"}))
+            specs.append(ToolSpec(server.name, name, claude_name, description, schema))
         return tuple(specs)
 
 
@@ -255,6 +274,12 @@ class _Link:
                         except MCPError as exc:  # the server answered, and its answer was no
                             reason = str(exc)[:500]
                             answer.outcome = ToolOutcome(REFUSED.format(server=self._server.name, reason=reason), True)
+                        except Exception:
+                            # Sent, and then something broke: the server may well have acted on it.
+                            # The link is done for; say so before the caller wakes and reuses it.
+                            answer.outcome = ToolOutcome(LOST_MIDWAY.format(server=self._server.name), True)
+                            self.open = False
+                            raise
                         finally:
                             answer.done.set()
         except Exception as exc:
