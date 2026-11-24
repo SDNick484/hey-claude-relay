@@ -34,3 +34,21 @@ def secrets():
 @pytest.fixture
 def app(cfg, secrets):
     return create_app(cfg, secrets)
+
+
+class FakeClock:
+    """A clock the test moves by hand."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock():
+    return FakeClock()
