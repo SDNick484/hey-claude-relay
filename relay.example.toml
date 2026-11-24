@@ -1,0 +1,18 @@
+# hey-claude-relay configuration.
+#
+#   cp relay.example.toml relay.toml && vim relay.toml
+#
+# relay.toml is gitignored. Secrets are never written here: they come from the environment
+# (see "Deploying" in the README). An unknown key stops startup, so a typo cannot quietly
+# switch a setting off.
+
+model = "claude-sonnet-5-5"   # a faster model is a one-line change
+effort = "low"                # how hard the model thinks; low keeps replies quick
+idle_minutes = 15             # a conversation is forgotten after this long without a turn
+
+# The Cloudflare Access application in front of the relay, and the service tokens allowed to
+# call it. With no [access] table the relay serves this machine only.
+[access]
+team_domain = "example.cloudflareaccess.com"
+audiences = ["replace-with-the-access-application-aud-tag"]
+service_tokens = ["replace-with-the-phone-token-client-id.access"]
