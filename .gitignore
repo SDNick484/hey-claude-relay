@@ -1,0 +1,17 @@
+# Real configuration and secrets never go in git; relay.example.toml is the template.
+/relay.toml
+/voice.md
+.env
+.env.*
+
+.venv/
+__pycache__/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.superpowers/

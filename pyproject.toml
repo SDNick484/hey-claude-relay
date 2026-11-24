@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=77"]  # 77: SPDX `license` strings (PEP 639)
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hey-claude-relay"
+dynamic = ["version"]
+description = "A small relay that turns one spoken line into a Claude conversation with tools from your MCP servers, and returns a short reply to read aloud"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+# Every runtime package here is already in the dependency trees of the two SDKs (anthropic, mcp).
+# Pinned exactly; uv.lock pins the rest of the tree with hashes. Dependabot bumps both together.
+dependencies = [
+    "anthropic==2.13.0",      # the Claude API client (manual tool loop on messages.create)
+    "mcp==2.3.0",             # the MCP client over Streamable HTTP
+    "pyjwt[crypto]==2.15.1",  # verifying Cloudflare Access assertions
+    "starlette==1.10.0",      # the HTTP app
+    "uvicorn==0.54.0",        # the server
+    "pydantic==2.14.4",       # config and request validation
+    "httpx2==2.16.2",         # the HTTP client both SDKs are built on (custom headers for MCP)
+    "anyio==4.16.0",          # timeouts and locks
+]
+
+[project.scripts]
+hey-claude-relay = "hey_claude_relay.__main__:main"
+
+[dependency-groups]
+dev = ["pytest==9.2.0", "pytest-cov==7.1.0", "ruff==0.17.6", "mypy==2.4.1"]
+
+[tool.setuptools.dynamic]
+version = { attr = "hey_claude_relay.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hey_claude_relay = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["hey_claude_relay"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+exclude_also = ["if __name__ == .__main__.:", "pragma: no cover", "if TYPE_CHECKING:"]
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, pyupgrade, bugbear, simplify (same as the sibling servers)
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+files = ["src"]
+strict = true
