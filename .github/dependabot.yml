@@ -24,6 +24,11 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # The image's Python minor version is chosen by hand: it must be one CI tests against and
+    # one every compiled dependency has a musl wheel for. Dependabot keeps the digest current.
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       images:
         patterns: ["*"]

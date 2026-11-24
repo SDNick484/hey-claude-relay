@@ -1,0 +1,28 @@
+# hey-claude-relay with Docker Compose.
+#
+#   cp compose.example.yaml compose.yaml && vim compose.yaml
+#
+# Beside this file: relay.toml (settings), .env (secrets, chmod 600), and, only if you want your
+# own voice prompt, voice.md. None of the three belongs in git.
+#
+# Nothing here depends on the host's init system. Docker restarts the container itself; on Alpine
+# the Docker daemon is started by OpenRC (`rc-update add docker default`).
+
+services:
+  relay:
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-}   # GIT_COMMIT=$(git rev-parse HEAD) docker compose build
+    image: hey-claude-relay
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./relay.toml:/config/relay.toml:ro
+      # Your own voice prompt, editable in place: uncomment this line and set
+      # prompt_file = "voice.md" in relay.toml. Without it the relay uses the prompt it ships with.
+      # - ./voice.md:/config/voice.md:ro
+    ports:
+      # The address the tunnel's route points at. If cloudflared runs in Docker on this host,
+      # 127.0.0.1 will not reach it: publish on the host's LAN address instead.
+      - "127.0.0.1:8787:8787"

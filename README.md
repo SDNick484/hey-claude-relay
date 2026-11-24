@@ -183,6 +183,139 @@ another host, or that a web page on another site sent. `--insecure-no-auth` lift
 two for a test on a trusted LAN; reach the relay by IP address then, because it still refuses
 requests addressed to a host name and cross-site requests.
 
+## Configuration reference
+
+Everything is in `relay.toml` except secrets. An unknown key stops startup. `relay.example.toml`
+has every key with comments.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `model` | `claude-sonnet-5-5` | the Claude model |
+| `effort` | `low` | how hard the model thinks: `low`, `medium`, `high`, `xhigh`, `max`; leave the key out for a model that has no such setting |
+| `max_tokens` | `16000` | the most one reply (thinking included) may use |
+| `idle_minutes` | `15` | a conversation is forgotten after this long without a turn |
+| `max_turns` | `40` | past this many turns a conversation keeps only its newest half |
+| `prompt_file` | unset | your own voice prompt, a path beside `relay.toml`; unset uses the prompt that ships with the relay |
+| `max_rounds` | `8` | rounds of tool calls in one turn |
+| `turn_seconds` | `45` | time for the tool loop of one turn, tool listing included |
+| `wrapup_seconds` | `10` | time for the one last call after a limit; with `turn_seconds` it must stay under 58 |
+| `claude_seconds` | `30` | the longest one call to Claude may take |
+| `list_seconds` | `5` | how long a server gets to list its tools when a conversation starts |
+| `tools_ttl_seconds` | `300` | how long a server's tool list is remembered |
+| `max_text_chars` | `2000` | a longer `text` is a `bad_request` |
+| `turns_per_minute` | `30` | more than this answers `rate_limited` |
+| `max_description_chars` | `2000` | a longer tool description is cut there |
+| `[access]` `team_domain`, `audiences`, `service_tokens` | none | the Access application in front of the relay and the service-token client IDs allowed to call it; without the table the relay serves this machine only |
+| `[[server]]` `name`, `url`, `auth` | required | an MCP server; `auth` is `cf-service-token`, `bearer` or `none` |
+| `[[server]]` `token_env` | none | with `auth = "bearer"`: the environment variable holding that server's token |
+| `[[server]]` `tools`, `deny` | all, none | allow-list and deny-list of tool names (globs) |
+| `[[server]]` `timeout_seconds` | `20` | the longest one tool call on that server may take |
+| `[[server]]` `service_from`, `allow_services`, `deny_services` | none | see "What a voice may and may not do" |
+| `[[gate]]` `server`, `match`, `require` | none | a held action and its checks: `near-home`, `passphrase` |
+| `[near_home]` `server`, `tool`, `arguments`, `result_path`, `states` | none | how the relay checks where you are |
+| `[gates]` `hold_seconds`, `max_misses`, `lockout_minutes` | `30`, `3`, `15` | timing for gated actions |
+
+Environment (never in a file in git): `ANTHROPIC_API_KEY`, `CF_ACCESS_CLIENT_ID`,
+`CF_ACCESS_CLIENT_SECRET`, `RELAY_PASSPHRASE_HASH`, and each server's `token_env` variable. Also
+`RELAY_CONFIG`, `RELAY_BIND`, `RELAY_PORT` (where to find the config and where to listen; the
+image sets them) and `RELAY_LOG_LEVEL` (`info`, or `debug` to log what was said and answered).
+
+## Deploying
+
+The relay runs as one container on any Docker host, published through a Cloudflare tunnel
+behind its own Access application. These are the steps that need your accounts and your
+secrets. Nothing here asks you to put a secret anywhere but `.env` on the host and the phone
+app's settings.
+
+On the host, get the code and build the image:
+
+```sh
+git clone https://github.com/SDNick484/hey-claude-relay.git && cd hey-claude-relay
+docker build --build-arg GIT_COMMIT="$(git rev-parse HEAD)" -t hey-claude-relay .
+cp relay.example.toml relay.toml
+cp compose.example.yaml compose.yaml
+touch .env && chmod 600 .env
+```
+
+Then:
+
+1. **An Access application for the relay.** In Cloudflare Zero Trust, add a self-hosted
+   application for the relay's hostname (say `relay.example.com`) with one policy whose action
+   is *Service Auth*. Put its AUD tag in `[access] audiences` and your team domain
+   (`<team>.cloudflareaccess.com`) in `[access] team_domain`.
+2. **A service token for the phone.** Create a service token and add it to that policy. Put its
+   Client ID (it ends in `.access`) in `[access] service_tokens`. Its Client ID and Client Secret
+   go into the phone app's settings and nowhere else.
+3. **A second service token, for the relay itself.** This is what the relay shows your MCP
+   servers. In `.env`:
+
+   ```sh
+   CF_ACCESS_CLIENT_ID=<the relay token's Client ID>
+   CF_ACCESS_CLIENT_SECRET=<the relay token's Client Secret>
+   ```
+4. **Admit the relay on each server behind Access.** For every `[[server]]` with
+   `auth = "cf-service-token"`:
+   - add the relay's token to that server's Access policy (action *Service Auth*);
+   - on servers built on `mcp-server-shared`, add its Client ID to `MCP_ALLOWED_SERVICE_TOKENS`,
+     and where the relay should do more than read, set
+     `MCP_AUTOMATION_TIERS=read,power-off,everyday`. A server only sees a setting its init
+     script exports: check that `MCP_AUTOMATION_TIERS` is in the export list.
+   - a third-party server (Home Assistant's) has no tiers. There the relay's own `tools`,
+     `allow_services`, `deny_services` and `[[gate]]` rules are the control, so set them with care.
+5. **A server with its own token.** For `auth = "bearer"`, put that server's token in `.env`
+   under the name its `token_env` gives:
+
+   ```sh
+   COOKBOOKS_MCP_TOKEN=<that server's token>
+   ```
+6. **An Anthropic API key.** Turns are billed to it. In `.env`:
+
+   ```sh
+   ANTHROPIC_API_KEY=<the key>
+   ```
+7. **The passphrase**, if a gate requires one. Run this, type the phrase twice (it is not shown),
+   and paste the one line it prints into `.env`:
+
+   ```sh
+   docker run --rm -it hey-claude-relay hash-passphrase
+   ```
+
+   Three or more words, no numbers, and nothing you would say in the car for another reason.
+8. **Your configuration.** Edit the two files, then let the relay check them:
+
+   ```sh
+   vim relay.toml      # hosts, servers, service lists, the gate, [near_home]
+   vim .env            # KEY=value lines, no quotes
+   docker run --rm --env-file .env -v "$PWD/relay.toml:/config/relay.toml:ro" hey-claude-relay check-config
+   ```
+
+   `check-config` prints `ok` or one line saying what to fix. It names keys and variables,
+   never their values.
+9. **Start it, route it, test it.**
+
+   ```sh
+   vim compose.yaml    # the published address: where the tunnel's route will point
+   docker compose up -d
+   curl -s http://127.0.0.1:8787/healthz
+   ```
+
+   Add a route in the tunnel from the relay's hostname to that address. Then, from any machine,
+   with the phone token's two values exported in the shell:
+
+   ```sh
+   export RELAY_URL=https://relay.example.com
+   export CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+   sh scripts/smoke.sh
+   ```
+
+   It prints one `ok` line per check and sends two real turns to Claude.
+
+To update: `git pull`, build the image again, `docker compose up -d`. A restart forgets
+conversations, held calls and the lockout, which is by design.
+
+If something is wrong, `docker compose logs relay` has one line per turn and one per refusal.
+Refusals name the reason (no assertion, an unlisted token, a bad audience) and never the token.
+
 ## Development
 
 ```sh
