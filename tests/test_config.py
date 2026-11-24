@@ -171,3 +171,15 @@ def test_a_server_url_must_be_http(tmp_path, url):
 def test_an_unknown_auth_mode_is_refused(tmp_path):
     with pytest.raises(ConfigError, match="auth"):
         load(tmp_path, SERVER + 'auth = "oauth"\n')
+
+
+def test_the_two_time_limits_must_fit_what_clients_wait(tmp_path):
+    with pytest.raises(ConfigError, match="60"):
+        load(tmp_path, "turn_seconds = 55\nwrapup_seconds = 10\n")
+    load(tmp_path, "turn_seconds = 48\nwrapup_seconds = 10\n")
+
+
+@pytest.mark.parametrize("line", ["turn_seconds = inf", "idle_minutes = nan", "claude_seconds = inf", 'model = ""'])
+def test_values_that_make_no_sense_are_refused(tmp_path, line):
+    with pytest.raises(ConfigError, match=line.split(" ")[0]):
+        load(tmp_path, line + "\n")

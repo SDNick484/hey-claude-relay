@@ -44,8 +44,11 @@ with `relay.example.toml` and checks `/healthz`.
   and earlier messages are never edited: the API ties the model's thinking blocks to all three.
   The only removals are whole turns from the end (a turn that came to nothing) and `trim`, which
   also strips thinking blocks from what it keeps.
-- Test helpers: `tests/conftest.py` (`make_relay`, `FakeClock`), `tests/fakes.py` (`FakeClaude`, `say`,
-  `use`, `refuse`), `tests/keys.py` (`mint`).
+- Test helpers: `tests/conftest.py` (`make_relay`, `servers`, `FakeClock`, `assert_valid_history`, the
+  TOML texts), `tests/fakes.py` (`FakeClaude`, `say`, `use`, `refuse`), `tests/stubs.py` (`sdk_stub`,
+  `legacy_stub`), `tests/keys.py` (`mint`).
+- A turn must leave the conversation valid for the Messages API whatever happened in it. New turn
+  behaviour gets an `assert_valid_history` check.
 
 ## Layout
 
@@ -53,7 +56,8 @@ with `relay.example.toml` and checks `/healthz`.
 - `src/hey_claude_relay/errors.py`: the `{"error": {"code", "spoken"}}` shape
 - `src/hey_claude_relay/app.py`: `create_app`, routes, request validation, the turn log line, the rate limit,
   the crash guard
-- `src/hey_claude_relay/turn.py`: `TurnRunner`, one turn from text to spoken reply
+- `src/hey_claude_relay/turn.py`: `TurnRunner`, one turn from text to spoken reply: the tool loop and its limits
+- `src/hey_claude_relay/mcp_client.py`: the MCP side: auth headers, the tool catalog, per-turn connections
 - `src/hey_claude_relay/claude.py`: the Claude API adapter and its error mapping
 - `src/hey_claude_relay/conversations.py`: conversations in memory, and `turn_id` replay
 - `src/hey_claude_relay/speech.py`: `strip_markdown`

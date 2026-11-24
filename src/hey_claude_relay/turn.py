@@ -14,12 +14,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import anyio
 from anthropic.types import Message
 
 from .claude import ClaudeClient, text_of
 from .config import ConfigError, RelayConfig, prompt_text
 from .conversations import Clock, Conversation, ConversationStore
-from .errors import EMPTY, INTERNAL, LOST, REFUSAL, RelayError
+from .errors import EMPTY, INTERNAL, LOST, OUT_OF_TIME, REFUSAL, RelayError
 from .mcp_client import McpServers, TurnSession
 from .speech import strip_markdown
 
@@ -36,7 +37,14 @@ UNAVAILABLE_NOTE = (
 )
 # Tool results the relay writes itself.
 NOT_OFFERED = "No tool named {name} is available. Use only the tools you were given."
-STOPPED = "The relay stopped before this tool finished. It may or may not have run."
+STOPPED = "The relay stopped waiting for this tool when the turn ran out of time. It may or may not have finished."
+NOT_RUN = "Not run: the turn ran out of time first."
+# Appended to the last user message when a turn hits its round or time limit, before one last
+# call with tools switched off. The relay adds the sentence about running out of time itself.
+WRAP_UP = (
+    "[relay] No more tool calls on this turn. Answer now from what you already have, in one or two sentences. "
+    "If you have nothing useful yet, say nothing but that you could not finish. Do not mention time or limits."
+)
 
 
 @dataclass(frozen=True)
@@ -57,6 +65,10 @@ class _Progress:
     rounds: int = 0
     used: list[str] = field(default_factory=list)  # "server.tool" for each tool sent to a server, first use first
     ran_a_tool: bool = False  # once true the turn has had effects and can no longer be undone
+    deadline: float = 0.0  # on anyio's clock: when the tool loop must stop
+
+    def time_left(self) -> float:
+        return max(self.deadline - anyio.current_time(), 0.001)
 
 
 def _said(text: str) -> dict[str, Any]:
@@ -121,7 +133,16 @@ class TurnRunner:
         conversation.messages.append({"role": "user", "content": text})
         try:
             async with self.servers.session() as session:
-                return await self._loop(conversation, session, progress)
+                # Two limits, and either one ends in a spoken reply, never an error: so many
+                # rounds of tools, and so many seconds for the whole loop.
+                result: TurnResult | None = None
+                progress.deadline = anyio.current_time() + self.cfg.turn_seconds
+                with anyio.move_on_after(self.cfg.turn_seconds) as limit:
+                    result = await self._loop(conversation, session, progress)
+                if result is not None:
+                    return result
+                outcome = "limit_time" if limit.cancelled_caught else "limit_rounds"
+                return await self._wrap_up(conversation, progress, outcome)
         except RelayError as exc:
             if progress.ran_a_tool:
                 # Something was done, so the turn stays, closed with what the driver heard.
@@ -139,14 +160,15 @@ class TurnRunner:
                 conversation.messages.append(_said(INTERNAL))
             raise
 
-    async def _loop(self, conversation: Conversation, session: TurnSession, progress: _Progress) -> TurnResult:
-        while True:
+    async def _loop(self, conversation: Conversation, session: TurnSession, progress: _Progress) -> TurnResult | None:
+        """Rounds of "ask Claude, run its tools". None when the rounds run out before Claude answers."""
+        for _ in range(self.cfg.max_rounds):
             message = await self.claude.create(
                 system=conversation.system,
                 tools=conversation.tools,
                 messages=conversation.messages,
                 allow_tools=True,
-                timeout=self.cfg.claude_seconds,
+                timeout=min(self.cfg.claude_seconds, progress.time_left()),
             )
             progress.rounds += 1
             calls = [block for block in message.content if block.type == "tool_use"]
@@ -156,6 +178,35 @@ class TurnRunner:
                 return self._answer(conversation, progress, message, cut_off=bool(calls))
             conversation.messages.append({"role": "assistant", "content": [b.to_dict() for b in message.content]})
             await self._run_tools(conversation, session, progress, calls)
+        return None
+
+    async def _wrap_up(self, conversation: Conversation, progress: _Progress, outcome: str) -> TurnResult:
+        """A limit was hit. Ask once more, with tools off, for what is known; then say time ran out."""
+        last = conversation.messages[-1]  # always a user message here: the question, or tool results
+        if isinstance(last["content"], str):
+            last["content"] = [{"type": "text", "text": last["content"]}]
+        last["content"].append({"type": "text", "text": WRAP_UP})
+        words = ""
+        try:
+            message = await self.claude.create(
+                system=conversation.system,
+                tools=conversation.tools,
+                messages=conversation.messages,
+                allow_tools=False,
+                timeout=self.cfg.wrapup_seconds,
+            )
+            progress.rounds += 1
+            if message.stop_reason != "refusal":
+                words = strip_markdown(text_of(message))
+        except RelayError:
+            pass  # there is still something to say: that time ran out
+        if words:
+            conversation.messages.append({"role": "assistant", "content": [b.to_dict() for b in message.content]})
+            reply = f"{words}{'' if words[-1] in '.!?' else '.'} {OUT_OF_TIME}"
+        else:
+            conversation.messages.append(_said(OUT_OF_TIME))
+            reply = OUT_OF_TIME
+        return TurnResult(conversation.id, reply, False, tuple(progress.used), outcome, progress.rounds)
 
     def _answer(
         self, conversation: Conversation, progress: _Progress, message: Message, *, cut_off: bool
@@ -188,12 +239,18 @@ class TurnRunner:
     ) -> None:
         """Run the tool calls of one model message in order and append all their results as one message."""
         results: list[dict[str, Any]] = []
+        started = 0
         try:
             for call in calls:
+                if anyio.current_time() >= progress.deadline:
+                    break  # out of time: nothing more is sent
+                started += 1
                 results.append(await self._run_tool(conversation, session, progress, call))
         finally:
-            # Even when the turn is cut short here, every call gets a result.
-            results.extend(_result(call.id, STOPPED, True) for call in calls[len(results) :])
+            # Even when the turn is cut short here, every call gets a result: one that was under
+            # way may have gone through, the ones after it were never sent.
+            for index in range(len(results), len(calls)):
+                results.append(_result(calls[index].id, STOPPED if index < started else NOT_RUN, True))
             conversation.messages.append({"role": "user", "content": results})
 
     async def _run_tool(
@@ -206,6 +263,6 @@ class TurnRunner:
         progress.ran_a_tool = True
         if spec.label not in progress.used:
             progress.used.append(spec.label)
-        timeout = self.servers.by_name[spec.server].timeout_seconds
+        timeout = min(self.servers.by_name[spec.server].timeout_seconds, progress.time_left())
         outcome = await session.call(spec.server, spec.name, call.input, timeout=timeout)
         return _result(call.id, outcome.text, outcome.is_error)

@@ -72,7 +72,7 @@ class ServerConfig(_Model):
     token_env: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]*$")
     tools: tuple[str, ...] = ()  # allow-list of tool names, as globs; empty allows everything not denied
     deny: tuple[str, ...] = ()  # tool names never offered, as globs
-    timeout_seconds: float = Field(default=20, gt=0)
+    timeout_seconds: float = Field(default=20, gt=0, allow_inf_nan=False)
 
     @field_validator("url")
     @classmethod
@@ -89,24 +89,32 @@ class ServerConfig(_Model):
 
 
 class RelayConfig(_Model):
-    model: str = "claude-sonnet-5-5"
+    model: str = Field(default="claude-sonnet-5-5", min_length=1)
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = "low"
     max_tokens: int = Field(default=16000, gt=0)
-    idle_minutes: float = Field(default=15, gt=0)
+    idle_minutes: float = Field(default=15, gt=0, allow_inf_nan=False)
     max_turns: int = Field(default=40, ge=2)
     # The voice instructions. Unset: the prompt that ships with the relay. Set: your own file,
     # relative to relay.toml, read when each conversation starts so it can be edited in place.
     prompt_file: Path | None = None
     max_rounds: int = Field(default=8, ge=1)
-    turn_seconds: float = Field(default=45, gt=0)
-    wrapup_seconds: float = Field(default=10, gt=0)
-    claude_seconds: float = Field(default=30, gt=0)
-    tools_ttl_seconds: float = Field(default=300, ge=0)
+    # The tool loop may run for turn_seconds; after it, one last call gets wrapup_seconds. Clients
+    # wait 60 seconds for an answer, so the two together must stay under that.
+    turn_seconds: float = Field(default=45, gt=0, allow_inf_nan=False)
+    wrapup_seconds: float = Field(default=10, gt=0, allow_inf_nan=False)
+    claude_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)  # the longest one call to Claude may take
+    tools_ttl_seconds: float = Field(default=300, ge=0, allow_inf_nan=False)
     max_text_chars: int = Field(default=2000, gt=0)
     turns_per_minute: int = Field(default=30, gt=0)
     max_description_chars: int = Field(default=2000, ge=0)  # a longer tool description is cut there
     access: AccessConfig | None = None
     server: tuple[ServerConfig, ...] = ()
+
+    @model_validator(mode="after")
+    def _a_turn_fits_what_clients_wait(self) -> RelayConfig:
+        if self.turn_seconds + self.wrapup_seconds > 58:
+            raise ValueError("turn_seconds plus wrapup_seconds must stay under 58: clients wait 60 seconds for a reply")
+        return self
 
     @model_validator(mode="after")
     def _server_names_are_unique(self) -> RelayConfig:

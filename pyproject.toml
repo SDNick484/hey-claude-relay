@@ -58,6 +58,10 @@ src = ["src", "tests"]
 # pycodestyle, pyflakes, isort, pyupgrade, bugbear, simplify (same as the sibling servers)
 select = ["E", "W", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# Tests nest "a stub server, then a relay wired to it": two short lines read better than one long one.
+"tests/*" = ["SIM117"]
+
 [tool.mypy]
 files = ["src"]
 strict = true
