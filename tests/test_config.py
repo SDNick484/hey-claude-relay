@@ -103,8 +103,6 @@ def test_a_blank_entry_in_an_allow_list_is_refused(tmp_path, key, table):
 
 
 def test_allow_list_entries_are_trimmed(tmp_path):
-    cfg, _ = load(
-        tmp_path,
-        '[access]\nteam_domain = "example.cloudflareaccess.com"\naudiences = [" aud-1 "]\nservice_tokens = ["a.access "]\n',
-    )
+    table = 'audiences = [" aud-1 "]\nservice_tokens = ["a.access "]\n'
+    cfg, _ = load(tmp_path, '[access]\nteam_domain = "example.cloudflareaccess.com"\n' + table)
     assert cfg.access.audiences == ("aud-1",) and cfg.access.service_tokens == ("a.access",)
