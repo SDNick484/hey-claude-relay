@@ -84,8 +84,7 @@ class AnthropicClaude:
             # The SDK enforces the timeout on the connection; fail_after enforces it on the call as
             # a whole. A deadline in the caller cancels from outside and is not caught here.
             with anyio.fail_after(timeout):
-                reply: Message = await self.client.with_options(timeout=timeout).messages.create(**request)
-                return reply
+                reply = await self.client.with_options(timeout=timeout).messages.create(**request)
         except (TimeoutError, anthropic.APITimeoutError) as exc:
             log.warning("Claude did not answer within %.1f s", timeout)
             raise RelayError("upstream_timeout", UPSTREAM_TIMEOUT) from exc
@@ -98,6 +97,16 @@ class AnthropicClaude:
         except anthropic.APIConnectionError as exc:
             log.warning("Claude API could not be reached: %s", type(exc).__name__)
             raise RelayError("upstream_error", UPSTREAM_ERROR) from exc
+        except anthropic.APIError as exc:
+            # Anything else the SDK raises, such as an answer it could not read.
+            log.warning("Claude API error: %s", type(exc).__name__)
+            raise RelayError("upstream_error", UPSTREAM_ERROR) from exc
+        if not isinstance(reply, Message):
+            # Something answered that was not the API (a proxy's error page, say): the SDK hands
+            # back the raw text instead of raising.
+            log.warning("Claude API answered with something that is not a message (%s)", type(reply).__name__)
+            raise RelayError("upstream_error", UPSTREAM_ERROR)
+        return reply
 
     @staticmethod
     def _log(exc: anthropic.APIStatusError) -> None:

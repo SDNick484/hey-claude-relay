@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 
 _COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 _NOT_A_NAME_CHAR = re.compile(r"[^a-z0-9_-]")
+_NOT_AN_ID_CHAR = re.compile(r"[^A-Za-z0-9_-]")
 MAX_BODY_BYTES = 64 * 1024  # a turn is a sentence or two; anything near this size is not a turn
 TURN_ID_TTL_SECONDS = 600  # the contract: a repeated turn_id gets the stored response for 10 minutes
 
@@ -96,7 +97,7 @@ async def _turn(request: Request) -> Response:
         def line(conversation: str, outcome: str, rounds: int = 0, tools: tuple[str, ...] = ()) -> None:
             log.info(
                 "turn conversation=%s client=%s outcome=%s rounds=%d tools=%s duration_ms=%d",
-                conversation[:8] or "-",
+                _NOT_AN_ID_CHAR.sub("", conversation)[:8] or "-",  # a caller's own id may hold anything
                 client,
                 outcome,
                 rounds,

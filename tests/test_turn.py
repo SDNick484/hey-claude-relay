@@ -122,7 +122,10 @@ BAD_BODIES = [
     b'{"turn_id": "", "text": "hi"}',
     b'{"turn_id": "  ", "text": "hi"}',
     b'{"turn_id": "t", "text": 7}',
+    b"",
     b'{"turn_id": "t", "text": "hi", "secret": "yes"}',
+    b'{"turn_id": "t", "text": "hi", "secret": 1}',
+    b'{"turn_id": "t", "text": "hi", "secret": null}',
     b'{"turn_id": "t", "text": "hi", "conversation_id": 5}',
     ('{"turn_id": "t", "text": "' + "x" * 2001 + '"}').encode(),
     ('{"turn_id": "' + "t" * 129 + '", "text": "hi"}').encode(),
@@ -186,6 +189,25 @@ async def test_a_failure_mid_conversation_keeps_the_earlier_turns():
         await r.turn("c", conversation_id=cid)
     assert failed.status_code == 504 and failed.json()["error"]["code"] == "upstream_timeout"
     assert [m["content"] for m in r.claude.calls[2]["messages"] if m["role"] == "user"] == ["a", "c"]
+
+
+async def test_an_unexpected_failure_also_leaves_no_trace_in_the_conversation():
+    script = [say("One."), RuntimeError("an SDK error nobody mapped"), say("Three.")]
+    async with make_relay("", *script) as r:
+        cid = (await r.turn("a")).json()["conversation_id"]
+        crashed = await r.turn("b", conversation_id=cid, turn_id="t-b")
+        again = await r.turn("b", conversation_id=cid, turn_id="t-b")
+    assert crashed.status_code == 500 and crashed.json()["error"]["code"] == "internal"
+    assert again.status_code == 200 and again.json()["reply"] == "Three."
+    assert [m["content"] for m in r.claude.calls[2]["messages"] if m["role"] == "user"] == ["a", "b"]
+
+
+async def test_the_conversation_id_in_the_log_is_cleaned(caplog):
+    caplog.set_level(logging.INFO)
+    async with make_relay("", RelayError("upstream_error", "x")) as r:
+        await r.turn("hi", conversation_id="abc\nturn conversation=forged outcome=ok")
+    lines = [x.getMessage() for x in caplog.records if x.getMessage().startswith("turn ")]
+    assert len(lines) == 1 and "\n" not in lines[0] and lines[0].count("outcome=") == 1
 
 
 async def test_a_secret_turn_with_nothing_held_never_reaches_claude(caplog):

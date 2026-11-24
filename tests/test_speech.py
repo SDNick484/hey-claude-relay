@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from hey_claude_relay.speech import strip_markdown
@@ -58,3 +60,30 @@ def test_strip_markdown_more(raw, spoken):
 def test_strip_markdown_never_raises_and_stays_on_one_line(raw):
     out = strip_markdown(raw)
     assert "\n" not in out and out == out.strip()
+
+
+@pytest.mark.parametrize(
+    "raw, spoken",
+    [
+        ("45. Anything else?", "45. Anything else?"),
+        ("100. That's a lot", "100. That's a lot"),
+        ("4. July is hot", "4. July is hot"),
+        ("It is 72.\n3. is the count", "It is 72. 3. is the count"),
+        ("1) Chili", "1) Chili"),
+        ("1. Chili\n2. Risotto\n3. Soup", "Chili. Risotto. Soup."),
+        ("Options:\n1) Chili\n2) Risotto", "Options: Chili. Risotto."),
+        ("2026. A good year.\n\n- Chili", "2026. A good year. Chili."),
+    ],
+)
+def test_a_lone_leading_number_is_an_answer_not_a_list_marker(raw, spoken):
+    assert strip_markdown(raw) == spoken
+
+
+FLOODS = ["[" * 20000, "![" * 10000, "[a](" * 5000, "[x][" * 5000, "(" * 20000, "*a" * 10000, "_a" * 10000]
+
+
+@pytest.mark.parametrize("flood", FLOODS, ids=lambda f: f[:4])
+def test_hostile_input_is_handled_quickly(flood):
+    started = time.perf_counter()
+    strip_markdown(flood)
+    assert time.perf_counter() - started < 0.5

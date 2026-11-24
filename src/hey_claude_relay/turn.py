@@ -75,6 +75,10 @@ class TurnRunner:
             del conversation.messages[mark:]
             exc.store = False
             raise
+        except BaseException:
+            # A crash or a cancellation: the question must not stay behind without an answer.
+            del conversation.messages[mark:]
+            raise
         if message.stop_reason == "refusal":
             del conversation.messages[mark:]
             return TurnResult(conversation.id, REFUSAL, False, (), "refusal", 1)

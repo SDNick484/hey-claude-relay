@@ -135,6 +135,17 @@ async def test_a_dead_connection_is_upstream_error():
     assert e.value.code == "upstream_error"
 
 
+async def test_a_reply_the_sdk_cannot_read_is_upstream_error():
+    def garbage(request):
+        return httpx2.Response(200, text="<html>not the API</html>", headers={"content-type": "text/html"})
+
+    http = DefaultAsyncHttpxClient(transport=httpx2.MockTransport(garbage))
+    claude = AnthropicClaude(RelayConfig(), AsyncAnthropic(api_key="sk-test-key", http_client=http, max_retries=0))
+    with pytest.raises(RelayError) as e:
+        await claude.create(system="S", tools=[], messages=MSGS, allow_tools=True, timeout=5)
+    assert e.value.code == "upstream_error"
+
+
 async def test_a_deadline_in_the_caller_is_not_reported_as_a_claude_timeout(mock_anthropic):
     # The turn's own time limit cancels the call from outside; that must stay a cancellation.
     mock_anthropic.hang()

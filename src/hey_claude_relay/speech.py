@@ -12,11 +12,17 @@ _FENCE = re.compile(r"^\s*(?:```|~~~)")
 _TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$")
 _RULE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
-_ITEM = re.compile(r"^\s*(?:[-*+•]|\d{1,3}[.)])\s+(?:\[[ xX]\]\s+)?(.*)$")
+_BULLET = re.compile(r"^\s*[-*+•]\s+(?:\[[ xX]\]\s+)?(.*)$")
+_NUMBERED = re.compile(r"^\s*\d{1,3}[.)]\s+(.*)$")
 _QUOTE = re.compile(r"^\s*(?:>\s?)+")
 
-_LINK = re.compile(r"!?\[([^\]\n]*)\]\([^()\s]*(?:\([^()\s]*\)[^()\s]*)*(?:\s+\"[^\"\n]*\")?\)")
-_REF_LINK = re.compile(r"!?\[([^\]\n]+)\]\[[^\]\n]*\]")
+# The lengths are bounded so that a flood of unclosed brackets costs time in proportion to its
+# length, not to its square: this runs on whatever the model wrote, on the event loop.
+_LINK = re.compile(
+    r"!?\[([^\]\n]{0,300})\]"
+    r"\([^()\s]{0,2000}(?:\([^()\s]{0,200}\)[^()\s]{0,2000}){0,4}(?:\s+\"[^\"\n]{0,300}\")?\)"
+)
+_REF_LINK = re.compile(r"!?\[([^\]\n]{1,300})\]\[[^\]\n]{0,300}\]")
 _AUTOLINK = re.compile(r"<https?://[^>\s]+>")
 _URL = re.compile(r"https?://[^\s<>]*[^\s<>.,;:!?)\]'\"]")
 # An opening marker must touch the text it wraps, and so must the closing one. That keeps
@@ -36,8 +42,10 @@ _ENDS_A_CLAUSE = ".!?:;,"
 
 
 def _inline(text: str) -> str:
-    text = _LINK.sub(r"\1", text)
-    text = _REF_LINK.sub(r"\1", text)
+    if "](" in text:
+        text = _LINK.sub(r"\1", text)
+    if "][" in text:
+        text = _REF_LINK.sub(r"\1", text)
     text = _AUTOLINK.sub("", text)
     text = _URL.sub("", text)
     for pattern in _EMPHASIS:
@@ -56,14 +64,19 @@ def strip_markdown(text: str) -> str:
     ends without punctuation.
     """
     pieces: list[tuple[str, bool]] = []  # (words, whether the line was a heading, list item or table row)
-    for line in text.replace("\x00", " ").splitlines():
+    lines = text.replace("\x00", " ").splitlines()
+    # "1. Chili / 2. Risotto" is a list. A single line that starts with a number is an answer
+    # ("45. Anything else?"), and its number must not be taken for a list marker and dropped.
+    # So a numbered line is a list item only in company: among other numbered or bulleted lines.
+    numbered_list = sum(1 for line in lines if _NUMBERED.match(line) or _BULLET.match(line)) >= 2
+    for line in lines:
         if _FENCE.match(line) or _TABLE_RULE.match(line) or _RULE.match(line):
             continue
         line = _QUOTE.sub("", line)
         structural = True
         if heading := _HEADING.match(line):
             words = heading.group(1)
-        elif item := _ITEM.match(line):
+        elif item := _BULLET.match(line) or (_NUMBERED.match(line) if numbered_list else None):
             words = item.group(1)
         elif line.strip().startswith("|") and line.strip().endswith("|") and len(line.strip()) > 1:
             words = ", ".join(cell.strip() for cell in line.strip().strip("|").split("|") if cell.strip())
