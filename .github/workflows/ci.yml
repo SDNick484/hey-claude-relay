@@ -64,12 +64,12 @@ jobs:
           echo "$out"
           echo "$out" | grep -q '"status":"ok"'
           echo "$out" | grep -q "$GITHUB_SHA"
-      - name: A turn without credentials is not answered
+      - name: A turn without credentials is refused
         run: |
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
             -d '{"turn_id":"ci","text":"hello"}' http://127.0.0.1:8787/v1/turn)
           echo "POST /v1/turn without credentials -> $code"
-          test "$code" != "200"
+          test "$code" = "403"
       - name: Container log
         if: always()
         run: docker logs relay

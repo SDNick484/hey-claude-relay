@@ -8,6 +8,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from .access import check_bind
 from .app import create_app
 from .config import ConfigError, RelayConfig, Secrets, load_config, prompt_text
 from .logsafe import configure_logging
@@ -35,18 +36,23 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--config", help="path to relay.toml (RELAY_CONFIG, default ./relay.toml)")
     serve.add_argument("--bind", help=f"address to listen on (RELAY_BIND, default {DEFAULT_BIND})")
     serve.add_argument("--port", type=int, help=f"port (RELAY_PORT, default {DEFAULT_PORT})")
+    serve.add_argument(
+        "--insecure-no-auth",
+        action="store_true",
+        help="serve without Cloudflare Access beyond this machine (trusted-LAN testing only)",
+    )
     check = sub.add_parser("check-config", help="read the configuration and say whether it is usable")
     check.add_argument("--config", help="path to relay.toml (RELAY_CONFIG, default ./relay.toml)")
     return parser
 
 
-def _serve(cfg: RelayConfig, secrets: Secrets, host: str, port: int) -> int:  # pragma: no cover
+def _serve(cfg: RelayConfig, secrets: Secrets, host: str, port: int, insecure_no_auth: bool) -> int:  # pragma: no cover
     import uvicorn
 
     # log_config=None: uvicorn's lines go through the root logger and its redacting filter.
     # proxy_headers=False: the peer address stays the real one; the relay decides what to trust.
     uvicorn.run(
-        create_app(cfg, secrets),
+        create_app(cfg, secrets, insecure_no_auth=insecure_no_auth),
         host=host,
         port=port,
         log_config=None,
@@ -68,11 +74,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"ok: {path}")
             return 0
         host, port = listen_address(args.bind, args.port, env)
+        check_bind(host, access=cfg.access is not None, insecure_no_auth=args.insecure_no_auth)
     except ConfigError as exc:
         print(f"hey-claude-relay: {exc}", file=sys.stderr)
         return 2
     configure_logging(env.get("RELAY_LOG_LEVEL", "info"), secrets)  # pragma: no cover
-    return _serve(cfg, secrets, host, port)  # pragma: no cover
+    return _serve(cfg, secrets, host, port, args.insecure_no_auth)  # pragma: no cover
 
 
 if __name__ == "__main__":
