@@ -15,7 +15,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
 
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
@@ -28,7 +28,10 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-Names = Annotated[tuple[str, ...], Field(min_length=1)]
+# An allow-list: at least one entry, and no blank ones. A blank entry must never come to mean
+# "a caller with no name is allowed".
+Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+Names = Annotated[tuple[Name, ...], Field(min_length=1)]
 
 
 class AccessConfig(_Model):

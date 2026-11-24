@@ -34,7 +34,11 @@ class RedactSecrets(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if not self._values:
             return True
-        record.msg, record.args = self._mask(record.getMessage()), None
+        try:
+            message = record.getMessage()
+        except Exception:  # a malformed log call somewhere else; logging would only have complained
+            message = str(record.msg)
+        record.msg, record.args = self._mask(message), None
         if record.exc_info and not record.exc_text:
             record.exc_text = logging.Formatter().formatException(record.exc_info)
         if record.exc_text:

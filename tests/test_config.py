@@ -86,3 +86,25 @@ def test_a_missing_or_empty_custom_prompt_is_a_config_error(tmp_path, content):
     cfg, _ = load(tmp_path, 'prompt_file = "voice.md"\n')
     with pytest.raises(ConfigError, match="voice.md"):
         prompt_text(cfg)
+
+
+@pytest.mark.parametrize(
+    "key, table",
+    [
+        ("audiences", 'audiences = [""]\nservice_tokens = ["a.access"]\n'),
+        ("service_tokens", 'audiences = ["aud-1"]\nservice_tokens = ["  "]\n'),
+        ("service_tokens", 'audiences = ["aud-1"]\nservice_tokens = ["a.access", ""]\n'),
+    ],
+)
+def test_a_blank_entry_in_an_allow_list_is_refused(tmp_path, key, table):
+    # A blank entry must never become "anything without a name is allowed".
+    with pytest.raises(ConfigError, match=key):
+        load(tmp_path, '[access]\nteam_domain = "example.cloudflareaccess.com"\n' + table)
+
+
+def test_allow_list_entries_are_trimmed(tmp_path):
+    cfg, _ = load(
+        tmp_path,
+        '[access]\nteam_domain = "example.cloudflareaccess.com"\naudiences = [" aud-1 "]\nservice_tokens = ["a.access "]\n',
+    )
+    assert cfg.access.audiences == ("aud-1",) and cfg.access.service_tokens == ("a.access",)
