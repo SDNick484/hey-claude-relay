@@ -17,7 +17,7 @@ from hey_claude_relay.app import create_app
 from hey_claude_relay.config import RelayConfig, Secrets, load_config
 from hey_claude_relay.gates import hash_passphrase
 from hey_claude_relay.mcp_client import McpServers
-from stubs import Stub, transport_for
+from stubs import Stub, house_stub, transport_for
 
 # Placeholder values for every environment variable relay.example.toml needs. It grows with the example.
 EXAMPLE_ENV: dict[str, str] = {
@@ -25,6 +25,7 @@ EXAMPLE_ENV: dict[str, str] = {
     "CF_ACCESS_CLIENT_ID": "placeholder.access",
     "CF_ACCESS_CLIENT_SECRET": "placeholder-not-a-real-secret",
     "COOKBOOKS_MCP_TOKEN": "placeholder-not-a-real-token",
+    "RELAY_PASSPHRASE_HASH": hash_passphrase("a throwaway phrase for the example"),
 }
 # The environment every test relay starts from; a test's own env= is laid over it.
 TEST_ENV: dict[str, str] = {
@@ -71,6 +72,23 @@ HOUSE_POLICY = (
     + """service_from = { ha_call_service = "{domain}.{service}" }
 allow_services = ["light.*", "cover.open_cover", "cover.close_cover"]
 deny_services = ["lock.unlock", "alarm_control_panel.alarm_disarm"]
+"""
+)
+# ...and a gate: opening a cover needs the owner near home and the spoken passphrase.
+GATED = (
+    HOUSE_POLICY
+    + """
+[[gate]]
+server = "house"
+match = { tool = "ha_call_service", service = "cover.open_cover" }
+require = ["near-home", "passphrase"]
+
+[near_home]
+server = "house"
+tool = "ha_get_state"
+arguments = { entity_id = "person.example", fields = ["state"] }
+result_path = "data.state"
+states = ["home"]
 """
 )
 TWO_SERVERS = (
@@ -216,3 +234,14 @@ async def make_relay(
             yield Relay(
                 http=http, claude=claude, clock=clock, app=app, dir=folder, stubs={stub.name: stub for stub in stubs}
             )
+
+
+@asynccontextmanager
+async def gated(
+    *script: Any, state: str = "home", search: Any = None, toml: str = GATED, env: Mapping[str, str] | None = None
+) -> AsyncIterator[tuple[Relay, Stub]]:
+    """A relay with the garage gate in force and a house to act on: yields (relay, house)."""
+    async with house_stub(state, search=search) as house:
+        hashed = {"RELAY_PASSPHRASE_HASH": PHRASE_HASH, **(env or {})}
+        async with make_relay(toml, *script, stubs=[house], env=hashed) as relay:
+            yield relay, house

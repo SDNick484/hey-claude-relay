@@ -17,10 +17,29 @@ import anyio
 
 if TYPE_CHECKING:
     from .mcp_client import Catalog
+    from .policy import ToolCall
 
 Clock = Callable[[], float]
 _THINKING = ("thinking", "redacted_thinking")
 _NOTHING_SAID = {"type": "text", "text": "(nothing said)"}
+
+
+@dataclass
+class PendingGate:
+    """A tool call the relay is holding until the passphrase is said.
+
+    While it exists, the conversation's last message is the model's request for the call, still
+    waiting for its results: ``results`` are the ones already settled for that message, in
+    order, with an empty place at ``slot`` for this call. The next message on the conversation
+    is the passphrase attempt, whatever it says.
+    """
+
+    call: ToolCall
+    tool_use_id: str
+    label: str  # "server.tool", for tools_used once it runs
+    results: list[dict[str, Any] | None]
+    slot: int
+    expires_at: float  # on the relay's clock; after this the call is dropped unrun
 
 
 @dataclass
@@ -39,7 +58,7 @@ class Conversation:
     last_used: float = 0.0
     lock: anyio.Lock = field(default_factory=anyio.Lock, repr=False)
     catalog: Catalog | None = None  # which server and tool each name in ``tools`` stands for
-    pending: Any = None
+    pending: PendingGate | None = None
 
 
 def _starts_a_turn(message: dict[str, Any]) -> bool:

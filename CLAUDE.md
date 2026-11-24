@@ -40,6 +40,12 @@ with `relay.example.toml` and checks `/healthz`.
 - **Alpine and OpenRC.** The image is `python:3.13-alpine`; nothing may assume systemd. Editor
   instructions in docs use `vim`.
 - Tests first: write the failing test, watch it fail, then write the code.
+- **A passphrase attempt goes nowhere.** The message after "Say your passphrase." (and any turn sent
+  with `secret: true`) may be used for the hash comparison only: never appended to a conversation,
+  passed to Claude, put in a response, or logged at any level. `tests/test_secret_never_leaks.py`
+  guards this; a change near `TurnRunner._resume` or the turn handler's logging must keep it green.
+- **Policy fails closed.** A call the rules cannot be applied to is refused, and a misconfigured rule
+  stops startup. Every tool call goes through `TurnRunner._run_tool`; do not add a second path.
 - **History is append-only.** A conversation keeps the system prompt and tool list it started with,
   and earlier messages are never edited: the API ties the model's thinking blocks to all three.
   The only removals are whole turns from the end (a turn that came to nothing) and `trim`, which
@@ -58,6 +64,8 @@ with `relay.example.toml` and checks `/healthz`.
   the crash guard
 - `src/hey_claude_relay/turn.py`: `TurnRunner`, one turn from text to spoken reply: the tool loop and its limits
 - `src/hey_claude_relay/mcp_client.py`: the MCP side: auth headers, the tool catalog, per-turn connections
+- `src/hey_claude_relay/policy.py`: `Policy.decide`: allow, refuse or hold each tool call (services, gates)
+- `src/hey_claude_relay/gates.py`: passphrase normalising and hashing, the lockout counter, the near-home check
 - `src/hey_claude_relay/claude.py`: the Claude API adapter and its error mapping
 - `src/hey_claude_relay/conversations.py`: conversations in memory, and `turn_id` replay
 - `src/hey_claude_relay/speech.py`: `strip_markdown`

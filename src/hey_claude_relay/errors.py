@@ -37,6 +37,13 @@ EMPTY = "I don't have an answer for that."
 LOST = "I lost track of that request, so nothing was done. Ask again if you still want it."
 OUT_OF_TIME = "I ran out of time before I could finish."
 
+# Spoken around a gated action. ASK is the one reply that comes with expect_secret: true.
+ASK = "Say your passphrase."
+MISS = "That didn't match, so I left it alone."
+LOCKED_NOW = "That didn't match. Protected actions are locked for {minutes:g} minutes."
+TOO_LATE = "That took too long, so I left it alone. Ask again if you still want it."
+CANCELLED = "Okay, I left it alone."
+
 
 class RelayError(Exception):
     """A failure with a code for the client and a line for the driver.
