@@ -20,12 +20,19 @@ loopback too, and would carry anyone's request in. So with no Access and no --in
 three things are refused: starting on a non-loopback address, any request carrying a proxy's
 forwarding headers (Cloudflare adds Cf-Connecting-IP and Cf-Ray, most proxies X-Forwarded-For
 or Forwarded), and any request whose Host is not this machine.
+
+A browser is the other way in. A web page open on this machine can post to a local port
+without asking, so with no Access a request whose Origin is not this machine is refused, in
+both modes. And --insecure-no-auth still requires the Host to be ``localhost`` or an address:
+a host name can be re-pointed at this machine by a hostile page (DNS rebinding), an address
+cannot.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -163,6 +170,10 @@ class AccessVerifier:
             )
         except jwt.PyJWTError as exc:
             raise AccessDenied(f"invalid Access assertion: {exc}") from exc
+        except (OSError, ValueError) as exc:
+            # The certs endpoint answered with something that is not a key set, or the connection
+            # broke in the middle. Refuse the request; do not crash on it.
+            raise AccessDenied(f"could not fetch or read Access's signing keys ({type(exc).__name__})") from exc
         return claims
 
     def caller(self, claims: Mapping[str, Any]) -> str:
@@ -172,25 +183,66 @@ class AccessVerifier:
         ``common_name`` that is not a plain string. An Access identity the relay doesn't know is
         never given the benefit of the doubt.
         """
+        if claims.get("email"):
+            raise AccessDenied("a person's login, not a service token")
         name = claims.get("common_name")
         if isinstance(name, str) and name and name in self.policy.service_tokens:
             return name
         raise AccessDenied("unknown caller: no common_name in the [access] service_tokens list")
 
 
+# A Host header value: a name, an IPv4 address or a bracketed IPv6 address, with an optional port.
+# Nothing else is accepted, so "127.0.0.1:8787@evil.example" is not read as 127.0.0.1.
+_HOST_RE = re.compile(r"^(?:\[(?P<v6>[0-9A-Fa-f:.]+)\]|(?P<name>[A-Za-z0-9.-]+))(?::\d{1,5})?$")
+
+
+def _host_of(value: str) -> str | None:
+    """The host in a Host header value or a bind address, or None if it is not plainly one."""
+    value = value.strip()
+    if match := _HOST_RE.fullmatch(value):
+        return match.group("v6") or match.group("name")
+    try:  # a bare IPv6 address, as given to --bind
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
+def _is_address(host: str) -> bool:
+    """Whether ``host`` is ``localhost`` or an IP address, not a name that DNS could point anywhere."""
+    name = _host_of(host)
+    if name is None:
+        return False
+    if name.lower() == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return False
+
+
 def _is_loopback(host: str) -> bool:
     """Whether ``host`` (an address, or a Host header value with an optional port) is this machine."""
-    name = host.strip()
-    if name.startswith("["):  # [::1]:8787
-        name = name[1:].partition("]")[0]
-    elif name.count(":") == 1:  # 127.0.0.1:8787, localhost:8787
-        name = name.partition(":")[0]
+    name = _host_of(host)
+    if name is None:
+        return False
     if name.lower() == "localhost":
         return True
     try:
         return ipaddress.ip_address(name).is_loopback
     except ValueError:
         return False
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    """Whether an Origin header names a page served from this machine."""
+    scheme, separator, host = origin.partition("://")
+    return separator == "://" and scheme in ("http", "https") and _is_loopback(host)
+
+
+def _printable(text: object) -> str:
+    """``text`` with nothing in it that could start a new log line, and not too much of it."""
+    return "".join(ch if ch.isprintable() else "?" for ch in str(text))[:300]
 
 
 def check_bind(bind: str, *, access: bool, insecure_no_auth: bool) -> None:
@@ -208,9 +260,10 @@ class AccessMiddleware:
     """Lets a request through only with a valid Access assertion from an admitted service token.
 
     ``GET /healthz`` is answered before the assertion is looked at, so a monitor can use it.
-    With no verifier and ``local_only``, a request a proxy forwarded, or one addressed to
-    another Host, is refused instead (see the module docstring); that check comes first, health
-    check included.
+    With no verifier, the checks in the module docstring apply instead, and they come first,
+    health check included: a cross-site Origin is refused; with ``local_only`` so is a request
+    a proxy forwarded or one addressed to another Host; without ``local_only``
+    (--insecure-no-auth) the Host must still be an address, not a name.
 
     Every request passed on carries who sent it in ``scope["state"]["caller"]``: the service
     token's client ID, or ``"local"`` when there is no verifier.
@@ -226,14 +279,9 @@ class AccessMiddleware:
             await self.app(scope, receive, send)
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers") or []}
-        if self.verifier is None and self.local_only:
-            forwarded = [h for h in FORWARDED_HEADERS if h in headers]
-            if forwarded:
-                await self._deny(scope, receive, send, f"forwarded by a proxy ({', '.join(forwarded)})")
-                return
-            if not _is_loopback(headers.get("host", "")):
-                await self._deny(scope, receive, send, "addressed to a Host that is not this machine")
-                return
+        if self.verifier is None and (refusal := self._unguarded(headers)) is not None:
+            await self._deny(scope, receive, send, refusal)
+            return
         if scope["path"] == HEALTH_PATH and scope.get("method") in ("GET", "HEAD"):
             await self.app(scope, receive, send)
             return
@@ -251,7 +299,27 @@ class AccessMiddleware:
         scope.setdefault("state", {})[CALLER_STATE_KEY] = caller
         await self.app(scope, receive, send)
 
+    def _unguarded(self, headers: dict[str, str]) -> str | None:
+        """With no Access in front: why this request is refused, or None if it may go on."""
+        origin = headers.get("origin")
+        if origin is not None and not _is_loopback_origin(origin):
+            return "a cross-site request (its Origin is not this machine)"
+        host = headers.get("host", "")
+        if not self.local_only:
+            return None if _is_address(host) else "addressed to a host name, not an address"
+        forwarded = [h for h in FORWARDED_HEADERS if h in headers]
+        if forwarded:
+            return f"forwarded by a proxy ({', '.join(forwarded)})"
+        return None if _is_loopback(host) else "addressed to a Host that is not this machine"
+
     async def _deny(self, scope: Scope, receive: Receive, send: Send, reason: str) -> None:
         client = scope.get("client") or ("?", 0)
-        log.warning("Denied %s %s from %s: %s", scope.get("method"), scope["path"], client[0], reason)
+        # The path and the reason can carry text the sender chose (an unverified key id, for one).
+        log.warning(
+            "Denied %s %s from %s: %s",
+            _printable(scope.get("method")),
+            _printable(scope["path"]),
+            client[0],
+            _printable(reason),
+        )
         await error_response("unauthorized", UNAUTHORIZED)(scope, receive, send)
