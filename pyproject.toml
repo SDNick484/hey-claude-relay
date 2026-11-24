@@ -39,6 +39,7 @@ hey_claude_relay = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+anyio_mode = "auto"  # every `async def test_...` runs under anyio, no marker needed
 
 [tool.coverage.run]
 source = ["hey_claude_relay"]

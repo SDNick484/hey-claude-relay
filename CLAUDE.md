@@ -46,6 +46,8 @@ with `relay.example.toml` and checks `/healthz`.
 - `src/hey_claude_relay/config.py`: `relay.toml` and environment into `RelayConfig` and `Secrets`
 - `src/hey_claude_relay/errors.py`: the `{"error": {"code", "spoken"}}` shape
 - `src/hey_claude_relay/app.py`: `create_app`, routes, the crash guard
+- `src/hey_claude_relay/access.py`: Access assertion check and the auth middleware (a port of part of
+  `mcp-server-shared`'s `remote.py`; the header comment names the upstream commit)
 - `src/hey_claude_relay/logsafe.py`: the log filter that masks secret values
 - `src/hey_claude_relay/__main__.py`: `serve`, `check-config`
 - `src/hey_claude_relay/prompts/voice.md`: the default voice instructions, shipped in the package

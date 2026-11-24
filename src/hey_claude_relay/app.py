@@ -16,13 +16,13 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import __version__
+from .access import HEALTH_PATH, AccessMiddleware, AccessPolicy, AccessVerifier
 from .config import RelayConfig, Secrets
 from .errors import INTERNAL, NOT_UNDERSTOOD, RelayError, error_response
 
 log = logging.getLogger(__name__)
 
 Clock = Callable[[], float]
-HEALTH_PATH = "/healthz"
 _COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 
@@ -32,6 +32,10 @@ async def _healthz(request: Request) -> JSONResponse:
     if _COMMIT_RE.fullmatch(commit):  # set at image build; anything else is left out, never echoed
         body["commit"] = commit
     return JSONResponse(body)
+
+
+async def _end_conversation(request: Request) -> Response:
+    return Response(status_code=204)
 
 
 async def _http_error(request: Request, exc: Exception) -> Response:
@@ -73,13 +77,32 @@ class CrashGuard:
                 await error_response("internal", INTERNAL)(scope, receive, send)
 
 
-def create_app(cfg: RelayConfig, secrets: Secrets, *, clock: Clock = time.monotonic) -> Starlette:
-    """Build the app. Later arguments are keyword-only so tests can swap in fakes one at a time."""
+def create_app(
+    cfg: RelayConfig,
+    secrets: Secrets,
+    *,
+    clock: Clock = time.monotonic,
+    verifier: AccessVerifier | None = None,
+    insecure_no_auth: bool = False,
+) -> Starlette:
+    """Build the app. Later arguments are keyword-only so tests can swap in fakes one at a time.
+
+    With an ``[access]`` table every request but ``GET /healthz`` needs a verified assertion
+    (``verifier`` is built from the config unless a test passes its own). Without one the app
+    serves this machine only, unless ``insecure_no_auth`` says otherwise.
+    """
+    if verifier is None and cfg.access is not None:
+        verifier = AccessVerifier(AccessPolicy.from_config(cfg.access))
     app = Starlette(
-        routes=[Route(HEALTH_PATH, _healthz, methods=["GET"])],
+        routes=[
+            Route(HEALTH_PATH, _healthz, methods=["GET"]),
+            Route("/v1/conversations/{conversation_id}/end", _end_conversation, methods=["POST"]),
+        ],
         exception_handlers={HTTPException: _http_error, RelayError: _relay_error},
     )
     app.state.cfg = cfg
     app.state.clock = clock
+    # Added last, runs first: CrashGuard wraps the auth check, which wraps the routes.
+    app.add_middleware(AccessMiddleware, verifier=verifier, local_only=verifier is None and not insecure_no_auth)
     app.add_middleware(CrashGuard)
     return app

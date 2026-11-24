@@ -1,7 +1,5 @@
 """Shared test helpers. No test here needs a real server, a real API key, or anything beyond loopback."""
 
-import inspect
-
 import httpx2
 import pytest
 
@@ -14,14 +12,8 @@ EXAMPLE_ENV: dict[str, str] = {}
 
 @pytest.fixture
 def anyio_backend():
+    """Async tests run on asyncio only (pyproject sets anyio_mode = "auto")."""
     return "asyncio"
-
-
-def pytest_collection_modifyitems(items):
-    """Every `async def test_...` runs under anyio, without a marker on each one."""
-    for item in items:
-        if inspect.iscoroutinefunction(getattr(item, "function", None)):
-            item.add_marker(pytest.mark.anyio)
 
 
 def client_for(app) -> httpx2.AsyncClient:
