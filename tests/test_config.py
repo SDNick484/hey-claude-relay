@@ -106,3 +106,68 @@ def test_allow_list_entries_are_trimmed(tmp_path):
     table = 'audiences = [" aud-1 "]\nservice_tokens = ["a.access "]\n'
     cfg, _ = load(tmp_path, '[access]\nteam_domain = "example.cloudflareaccess.com"\n' + table)
     assert cfg.access.audiences == ("aud-1",) and cfg.access.service_tokens == ("a.access",)
+
+
+SERVER = '[[server]]\nname = "cookbooks"\nurl = "https://mcp.example.com/mcp"\n'
+CF = {"CF_ACCESS_CLIENT_ID": "relay.access", "CF_ACCESS_CLIENT_SECRET": "s3cret"}
+
+
+def test_a_server_is_read_with_its_lists(tmp_path):
+    cfg, _ = load(
+        tmp_path, SERVER + 'auth = "none"\ntools = ["search_*"]\ndeny = ["search_all"]\ntimeout_seconds = 5\n'
+    )
+    server = cfg.server[0]
+    assert (server.name, server.auth, server.tools, server.deny, server.timeout_seconds) == (
+        "cookbooks",
+        "none",
+        ("search_*",),
+        ("search_all",),
+        5,
+    )
+
+
+def test_bearer_needs_token_env_and_its_variable(tmp_path):
+    with pytest.raises(ConfigError, match="token_env"):
+        load(tmp_path, SERVER + 'auth = "bearer"\n')
+    with pytest.raises(ConfigError, match="COOKBOOKS_MCP_TOKEN"):
+        load(tmp_path, SERVER + 'auth = "bearer"\ntoken_env = "COOKBOOKS_MCP_TOKEN"\n')
+    _, secrets = load(
+        tmp_path, SERVER + 'auth = "bearer"\ntoken_env = "COOKBOOKS_MCP_TOKEN"\n', {"COOKBOOKS_MCP_TOKEN": "t"}
+    )
+    assert secrets.bearer == {"COOKBOOKS_MCP_TOKEN": "t"} and "COOKBOOKS_MCP_TOKEN" not in repr(secrets)
+
+
+def test_token_env_only_goes_with_bearer(tmp_path):
+    with pytest.raises(ConfigError, match="token_env"):
+        load(tmp_path, SERVER + 'auth = "none"\ntoken_env = "COOKBOOKS_MCP_TOKEN"\n')
+
+
+@pytest.mark.parametrize(
+    "env, missing", [({}, "CF_ACCESS_CLIENT_ID"), ({"CF_ACCESS_CLIENT_ID": "x"}, "CF_ACCESS_CLIENT_SECRET")]
+)
+def test_service_token_server_needs_both_variables(tmp_path, env, missing):
+    with pytest.raises(ConfigError, match=missing):
+        load(tmp_path, SERVER + 'auth = "cf-service-token"\n', env)
+    load(tmp_path, SERVER + 'auth = "cf-service-token"\n', CF)
+
+
+def test_duplicate_server_names_are_refused(tmp_path):
+    with pytest.raises(ConfigError, match="cookbooks"):
+        load(tmp_path, (SERVER + 'auth = "none"\n') * 2)
+
+
+@pytest.mark.parametrize("name", ["Has_Underscore", "UPPER", "-leading", "a__b", "", "x" * 33])
+def test_a_server_name_must_be_usable_as_a_prefix(tmp_path, name):
+    with pytest.raises(ConfigError, match="name"):
+        load(tmp_path, f'[[server]]\nname = "{name}"\nurl = "https://mcp.example.com/mcp"\nauth = "none"\n')
+
+
+@pytest.mark.parametrize("url", ["mcp.example.com/mcp", "ftp://mcp.example.com/mcp", ""])
+def test_a_server_url_must_be_http(tmp_path, url):
+    with pytest.raises(ConfigError, match="url"):
+        load(tmp_path, f'[[server]]\nname = "a"\nurl = "{url}"\nauth = "none"\n')
+
+
+def test_an_unknown_auth_mode_is_refused(tmp_path):
+    with pytest.raises(ConfigError, match="auth"):
+        load(tmp_path, SERVER + 'auth = "oauth"\n')

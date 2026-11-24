@@ -15,11 +15,60 @@ from starlette.applications import Starlette
 from fakes import FakeClaude
 from hey_claude_relay.app import create_app
 from hey_claude_relay.config import RelayConfig, Secrets, load_config
+from hey_claude_relay.mcp_client import McpServers
+from stubs import Stub, transport_for
 
 # Placeholder values for every environment variable relay.example.toml needs. It grows with the example.
-EXAMPLE_ENV: dict[str, str] = {"ANTHROPIC_API_KEY": "placeholder-not-a-real-key"}
+EXAMPLE_ENV: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "placeholder-not-a-real-key",
+    "CF_ACCESS_CLIENT_ID": "placeholder.access",
+    "CF_ACCESS_CLIENT_SECRET": "placeholder-not-a-real-secret",
+    "COOKBOOKS_MCP_TOKEN": "placeholder-not-a-real-token",
+}
 # The environment every test relay starts from; a test's own env= is laid over it.
-TEST_ENV: dict[str, str] = {"ANTHROPIC_API_KEY": "test-key-not-real"}
+TEST_ENV: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "test-key-not-real",
+    "CF_ACCESS_CLIENT_ID": "relay.access",
+    "CF_ACCESS_CLIENT_SECRET": "s3cret",
+    "COOKBOOKS_MCP_TOKEN": "tok-1",
+}
+
+# Whole relay.toml texts. Each ends in its [[server]] table, so a test can append a key to it.
+MATINEE = """
+[[server]]
+name = "matinee"
+url = "http://127.0.0.1:9001/mcp"
+auth = "cf-service-token"
+"""
+COOKBOOKS_BEARER = """
+[[server]]
+name = "cookbooks"
+url = "http://127.0.0.1:9002/mcp"
+auth = "bearer"
+token_env = "COOKBOOKS_MCP_TOKEN"
+"""
+COOKBOOKS_NONE = """
+[[server]]
+name = "cookbooks"
+url = "http://127.0.0.1:9002/mcp"
+auth = "none"
+"""
+HOUSE = """
+[[server]]
+name = "house"
+url = "http://127.0.0.1:9003/mcp"
+auth = "none"
+tools = ["ha_search", "ha_get_state", "ha_call_service"]
+"""
+TWO_SERVERS = (
+    MATINEE
+    + """
+[[server]]
+name = "house"
+url = "http://127.0.0.1:9003/mcp"
+auth = "none"
+"""
+)
 
 
 @pytest.fixture
@@ -64,6 +113,29 @@ class FakeClock:
 @pytest.fixture
 def clock():
     return FakeClock()
+
+
+def load_toml(toml: str, env: Mapping[str, str] | None = None, files: Mapping[str, str] | None = None):
+    """(cfg, secrets) for a relay.toml given as text, with the test environment under ``env``."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        for name, content in (files or {}).items():
+            (folder / name).write_text(content)
+        (folder / "relay.toml").write_text(toml)
+        return load_config(folder / "relay.toml", {**TEST_ENV, **(env or {})})
+
+
+def servers(toml: str, *stubs: Stub, env: Mapping[str, str] | None = None, clock: Any = None) -> McpServers:
+    """The relay's MCP side alone, wired to stubs."""
+    cfg, secrets = load_toml(toml, env)
+    return McpServers(
+        cfg.server,
+        secrets,
+        ttl_seconds=cfg.tools_ttl_seconds,
+        clock=clock or FakeClock(),
+        transport_for=transport_for(*stubs),
+        max_description_chars=cfg.max_description_chars,
+    )
 
 
 @dataclass
