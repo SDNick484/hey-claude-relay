@@ -16,10 +16,17 @@ set -eu
 base=${RELAY_URL%/}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+trap 'exit 130' INT TERM HUP
 auth="$tmp/auth"
 : > "$auth"
 chmod 600 "$auth"
 if [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+    case "$CF_ACCESS_CLIENT_ID$CF_ACCESS_CLIENT_SECRET" in
+        *\"* | *\\*)
+            echo "CF_ACCESS_CLIENT_ID or CF_ACCESS_CLIENT_SECRET holds a quote or a backslash, which this script cannot pass on whole." >&2
+            exit 2
+            ;;
+    esac
     printf 'header = "CF-Access-Client-Id: %s"\nheader = "CF-Access-Client-Secret: %s"\n' \
         "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$auth"
 fi
@@ -71,9 +78,11 @@ if [ "${RELAY_SMOKE_LOCAL:-}" != 1 ]; then
     : > "$tmp/body"
     code=$(curl -sS -o "$tmp/body" -w '%{http_code}' --max-time 65 -X POST -H 'content-type: application/json' \
         --data-binary '{"turn_id":"smoke-stranger","text":"hello"}' "$base/v1/turn") || code=000
-    if [ "$code" = 200 ] || [ "$code" = 000 ]; then
-        fail "a turn without credentials is refused"
-    fi
+    # Access answers a stranger with a redirect to its login page or a 403; the relay itself, 403.
+    case "$code" in
+        302 | 401 | 403) : ;;
+        *) fail "a turn without credentials is refused" ;;
+    esac
     ok "a turn without credentials is refused (HTTP $code)"
 fi
 

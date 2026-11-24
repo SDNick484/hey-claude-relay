@@ -92,3 +92,15 @@ def test_smoke_script_is_plain_posix_sh():
     for bashism in ("[[", "function ", "local ", "<<<", "$'", "pipefail", "jq "):
         assert bashism not in text, bashism
     assert os.access("scripts/smoke.sh", os.X_OK)
+
+
+@pytest.mark.parametrize("secret", ['has"quote', "has\\backslash"])
+def test_a_secret_curl_could_not_carry_whole_is_refused(local_relay_url, secret):
+    env = {"RELAY_URL": local_relay_url, "RELAY_SMOKE_LOCAL": "1", "CF_ACCESS_CLIENT_ID": "x.access"}
+    out = run({**env, "CF_ACCESS_CLIENT_SECRET": secret})
+    assert out.returncode != 0 and "CF_ACCESS_CLIENT_SECRET" in out.stderr and secret not in out.stdout + out.stderr
+
+
+def test_the_script_cleans_up_when_interrupted():
+    text = Path("scripts/smoke.sh").read_text()
+    assert "trap 'exit 130' INT TERM HUP" in text  # dash and ash do not run the EXIT trap on a signal otherwise

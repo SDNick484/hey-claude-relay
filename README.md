@@ -88,7 +88,7 @@ With [uv](https://docs.astral.sh/uv/):
 uv sync
 cp relay.example.toml relay.toml
 vim relay.toml
-export ANTHROPIC_API_KEY    # set it in your shell first; never write it in a file in this repository
+stty -echo; read -r ANTHROPIC_API_KEY; stty echo; export ANTHROPIC_API_KEY   # typed unseen, kept out of history
 uv run hey-claude-relay check-config
 uv run hey-claude-relay serve          # 127.0.0.1:8787
 curl -s http://127.0.0.1:8787/healthz
@@ -191,7 +191,7 @@ has every key with comments.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `model` | `claude-sonnet-5-5` | the Claude model |
-| `effort` | `low` | how hard the model thinks: `low`, `medium`, `high`, `xhigh`, `max`; leave the key out for a model that has no such setting |
+| `effort` | `low` | how hard the model thinks: `low`, `medium`, `high`, `xhigh`, `max`; set `"none"` for a model that has no such setting |
 | `max_tokens` | `16000` | the most one reply (thinking included) may use |
 | `idle_minutes` | `15` | a conversation is forgotten after this long without a turn |
 | `max_turns` | `40` | past this many turns a conversation keeps only its newest half |
@@ -218,14 +218,14 @@ has every key with comments.
 Environment (never in a file in git): `ANTHROPIC_API_KEY`, `CF_ACCESS_CLIENT_ID`,
 `CF_ACCESS_CLIENT_SECRET`, `RELAY_PASSPHRASE_HASH`, and each server's `token_env` variable. Also
 `RELAY_CONFIG`, `RELAY_BIND`, `RELAY_PORT` (where to find the config and where to listen; the
-image sets them) and `RELAY_LOG_LEVEL` (`info`, or `debug` to log what was said and answered).
+image sets the first and passes `--bind 0.0.0.0 --port 8787`, which win over the other two) and `RELAY_LOG_LEVEL` (`info`, or `debug` to log what was said and answered).
 
 ## Deploying
 
 The relay runs as one container on any Docker host, published through a Cloudflare tunnel
 behind its own Access application. These are the steps that need your accounts and your
 secrets. Nothing here asks you to put a secret anywhere but `.env` on the host and the phone
-app's settings.
+app's settings (the smoke test in step 9 reads the phone's token into one shell, unseen).
 
 On the host, get the code and build the image:
 
@@ -237,17 +237,20 @@ cp compose.example.yaml compose.yaml
 touch .env && chmod 600 .env
 ```
 
-Then:
+Each step below puts a value in `relay.toml` (settings) or `.env` (secrets). Open them with
+`vim relay.toml` and `vim .env` as you go. `.env` holds `KEY=value` lines with no quotes; a value
+containing `$`, `#` or a quote needs care, because Compose treats those specially.
 
 1. **An Access application for the relay.** In Cloudflare Zero Trust, add a self-hosted
    application for the relay's hostname (say `relay.example.com`) with one policy whose action
-   is *Service Auth*. Put its AUD tag in `[access] audiences` and your team domain
+   is *Service Auth*. Put its AUD tag (shown on the application's overview page) in `[access] audiences` and your team domain
    (`<team>.cloudflareaccess.com`) in `[access] team_domain`.
 2. **A service token for the phone.** Create a service token and add it to that policy. Put its
    Client ID (it ends in `.access`) in `[access] service_tokens`. Its Client ID and Client Secret
    go into the phone app's settings and nowhere else.
 3. **A second service token, for the relay itself.** This is what the relay shows your MCP
-   servers. In `.env`:
+   servers. It is not a caller of the relay: never add it to the relay's own Access policy or to
+   `[access] service_tokens`. In `.env`:
 
    ```sh
    CF_ACCESS_CLIENT_ID=<the relay token's Client ID>
@@ -281,29 +284,32 @@ Then:
    ```
 
    Three or more words, no numbers, and nothing you would say in the car for another reason.
-8. **Your configuration.** Edit the two files, then let the relay check them:
+8. **Your configuration.** Finish the two files, then let the relay check them, in the same
+   container setup it will run in:
 
    ```sh
    vim relay.toml      # hosts, servers, service lists, the gate, [near_home]
-   vim .env            # KEY=value lines, no quotes
-   docker run --rm --env-file .env -v "$PWD/relay.toml:/config/relay.toml:ro" hey-claude-relay check-config
+   vim compose.yaml    # the published address: where the tunnel's route will point
+   docker compose run --rm relay check-config
    ```
 
-   `check-config` prints `ok` or one line saying what to fix. It names keys and variables,
+   `check-config` prints `ok:` and the config path, or one line saying what to fix. It names keys and variables,
    never their values.
 9. **Start it, route it, test it.**
 
    ```sh
-   vim compose.yaml    # the published address: where the tunnel's route will point
    docker compose up -d
-   curl -s http://127.0.0.1:8787/healthz
+   curl -s http://127.0.0.1:8787/healthz     # use the address you published on
    ```
 
-   Add a route in the tunnel from the relay's hostname to that address. Then, from any machine,
-   with the phone token's two values exported in the shell:
+   Add a public hostname to the tunnel (Zero Trust, Networks, Tunnels) from the relay's hostname
+   to that address. Then run the smoke test from any machine as the phone would call: with the
+   **phone's** token, not the relay's from `.env`. Type the two values unseen so they stay out of
+   shell history, and close that shell afterwards:
 
    ```sh
    export RELAY_URL=https://relay.example.com
+   stty -echo; read -r CF_ACCESS_CLIENT_ID; read -r CF_ACCESS_CLIENT_SECRET; stty echo
    export CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
    sh scripts/smoke.sh
    ```

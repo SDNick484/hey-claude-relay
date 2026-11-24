@@ -181,3 +181,9 @@ async def test_fake_claude_follows_its_script_and_records_copies():
     with pytest.raises(AssertionError, match="script"):
         await fake.create(system="S", tools=[], messages=messages, allow_tools=True, timeout=1)
     assert "changed later" in fake.sent()
+
+
+async def test_effort_none_sends_no_effort(mock_anthropic):
+    # TOML has no null, so "none" is how a config says: this model has no effort setting.
+    await create(mock_anthropic, RelayConfig(effort="none"), tools=[])
+    assert "output_config" not in mock_anthropic.bodies[0]
