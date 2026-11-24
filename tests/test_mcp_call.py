@@ -154,3 +154,17 @@ async def test_a_turn_deadline_cancels_a_call_cleanly():
         with anyio.move_on_after(0.05) as scope:
             await s.call("matinee", "slow", {}, timeout=20)
     assert scope.cancelled_caught and time.perf_counter() - started < 5
+
+
+async def test_an_exception_inside_a_session_comes_out_as_itself():
+    class Oops(Exception):
+        pass
+
+    async with sdk_stub("matinee", {"where_is": where_is}) as stub:
+        try:
+            async with servers(MATINEE, stub).session() as s:
+                await s.call("matinee", "where_is", {"title": "a"}, timeout=5)
+                raise Oops("from the caller")
+        except Oops as exc:
+            caught = exc
+    assert str(caught) == "from the caller"

@@ -11,9 +11,12 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
+
+if TYPE_CHECKING:
+    from .mcp_client import Catalog
 
 Clock = Callable[[], float]
 _THINKING = ("thinking", "redacted_thinking")
@@ -35,6 +38,7 @@ class Conversation:
     messages: list[dict[str, Any]] = field(default_factory=list)
     last_used: float = 0.0
     lock: anyio.Lock = field(default_factory=anyio.Lock, repr=False)
+    catalog: Catalog | None = None  # which server and tool each name in ``tools`` stands for
     pending: Any = None
 
 
@@ -69,9 +73,9 @@ class ConversationStore:
             conversation.last_used = self._clock()
         return conversation
 
-    def start(self, system: str, tools: list[dict[str, Any]]) -> Conversation:
+    def start(self, system: str, tools: list[dict[str, Any]], catalog: Catalog | None = None) -> Conversation:
         self._sweep()
-        conversation = Conversation(secrets.token_urlsafe(16), system, tools, last_used=self._clock())
+        conversation = Conversation(secrets.token_urlsafe(16), system, tools, last_used=self._clock(), catalog=catalog)
         self._conversations[conversation.id] = conversation
         return conversation
 

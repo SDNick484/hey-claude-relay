@@ -2,7 +2,7 @@
 
 import tempfile
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -160,13 +160,35 @@ class Relay:
         return await self.http.post("/v1/turn", json=body)
 
 
+def assert_valid_history(messages: list[dict[str, Any]]) -> None:
+    """What the Messages API needs of a conversation, whatever happened in it: user first, roles
+    alternating, nothing empty, and every tool call answered in the very next message."""
+    assert messages and messages[0]["role"] == "user"
+    for earlier, later in zip(messages, messages[1:], strict=False):
+        assert earlier["role"] != later["role"], f"two {later['role']} messages in a row"
+    for index, message in enumerate(messages):
+        assert message["content"], f"message {index} is empty"
+        if message["role"] != "assistant":
+            continue
+        asked = [b["id"] for b in message["content"] if b["type"] == "tool_use"]
+        if asked:
+            assert index + 1 < len(messages), "a tool call was never answered"
+            answered = [b["tool_use_id"] for b in messages[index + 1]["content"] if b["type"] == "tool_result"]
+            assert answered == asked, f"tool calls {asked} were answered with {answered}"
+
+
 @asynccontextmanager
 async def make_relay(
-    toml: str = "", *script: Any, env: Mapping[str, str] | None = None, files: Mapping[str, str] | None = None
+    toml: str = "",
+    *script: Any,
+    stubs: Sequence[Stub] = (),
+    env: Mapping[str, str] | None = None,
+    files: Mapping[str, str] | None = None,
 ) -> AsyncIterator[Relay]:
     """A relay built from ``toml`` (a whole relay.toml) with a scripted Claude. No [access]: loopback only.
 
-    ``files`` are written beside relay.toml first, for a test that names its own prompt file.
+    ``stubs`` stand in for the MCP servers the toml names. ``files`` are written beside relay.toml
+    first, for a test that names its own prompt file.
     """
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)
@@ -175,6 +197,8 @@ async def make_relay(
         (folder / "relay.toml").write_text(toml)
         cfg, secrets = load_config(folder / "relay.toml", {**TEST_ENV, **(env or {})})
         claude, clock = FakeClaude(*script), FakeClock()
-        app = create_app(cfg, secrets, claude=claude, clock=clock)
+        app = create_app(cfg, secrets, claude=claude, clock=clock, transport_for=transport_for(*stubs))
         async with client_for(app) as http:
-            yield Relay(http=http, claude=claude, clock=clock, app=app, dir=folder)
+            yield Relay(
+                http=http, claude=claude, clock=clock, app=app, dir=folder, stubs={stub.name: stub for stub in stubs}
+            )

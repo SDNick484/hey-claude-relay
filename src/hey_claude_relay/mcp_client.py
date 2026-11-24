@@ -308,7 +308,15 @@ class TurnSession:
         for link in self._links.values():
             link.close()
         self._group.cancel_scope.cancel()
-        return await self._group.__aexit__(exc_type, exc, tb)
+        try:
+            await self._group.__aexit__(exc_type, exc, tb)
+        except BaseExceptionGroup as group:
+            # A task group hands back whatever was raised inside it wrapped in a group. When that
+            # is only the caller's own exception, let it go on as itself, so `except RelayError`
+            # around a session still works.
+            if exc is None or len(group.exceptions) != 1 or group.exceptions[0] is not exc:
+                raise
+        return False
 
     async def call(self, server: str, tool: str, arguments: Mapping[str, Any], *, timeout: float) -> ToolOutcome:
         """Call ``tool`` on ``server``. Never raises for a tool or transport failure: the outcome says so."""
