@@ -4,9 +4,10 @@ import jwt
 import pytest
 
 from conftest import client_for
-from hey_claude_relay.access import FORWARDED_HEADERS, AccessPolicy, AccessVerifier
+from hey_claude_relay.__main__ import main
+from hey_claude_relay.access import FORWARDED_HEADERS, AccessPolicy, AccessVerifier, check_bind
 from hey_claude_relay.app import create_app
-from hey_claude_relay.config import AccessConfig, RelayConfig, Secrets
+from hey_claude_relay.config import AccessConfig, ConfigError, RelayConfig, Secrets
 from keys import AUD, CALLER, TEAM, mint, resolver
 
 UNAUTHORIZED = {"error": {"code": "unauthorized", "spoken": "This device isn't allowed to use the relay."}}
@@ -184,3 +185,30 @@ async def test_a_denial_cannot_forge_a_log_line(caplog):
     denials = [r.getMessage() for r in caplog.records if "Denied" in r.getMessage()]
     assert len(denials) == 1 and "all is well" in denials[0]
     assert "\n" not in denials[0] and "\r" not in denials[0]
+
+
+def test_serving_beyond_loopback_needs_access():
+    with pytest.raises(ConfigError, match="Cloudflare Access"):
+        check_bind("0.0.0.0", access=False, insecure_no_auth=False)
+    with pytest.raises(ConfigError, match="Cloudflare Access"):
+        check_bind("192.0.2.10", access=False, insecure_no_auth=False)
+    check_bind("0.0.0.0", access=True, insecure_no_auth=False)
+    check_bind("0.0.0.0", access=False, insecure_no_auth=True)
+    for loopback in ("127.0.0.1", "localhost", "::1"):
+        check_bind(loopback, access=False, insecure_no_auth=False)
+
+
+def test_serve_refuses_an_open_bind_without_access(tmp_path, capsys):
+    cfg = tmp_path / "relay.toml"
+    cfg.write_text("")
+    assert main(["serve", "--config", str(cfg), "--bind", "0.0.0.0"]) == 2
+    assert "Cloudflare Access" in capsys.readouterr().err
+
+
+async def test_a_denial_is_logged_without_the_token(access_app, caplog):
+    caplog.set_level(logging.DEBUG)
+    token = mint(common_name="stranger.access")
+    await post(access_app, {"Cf-Access-Jwt-Assertion": token})
+    denials = [r for r in caplog.records if r.levelno == logging.WARNING and "Denied" in r.getMessage()]
+    assert len(denials) == 1 and "unknown caller" in denials[0].getMessage()
+    assert token not in caplog.text and token.split(".")[2] not in caplog.text
