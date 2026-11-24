@@ -173,6 +173,28 @@ class GateConfig(_Model):
         return value
 
 
+class NearHomeConfig(_Model):
+    """How the relay finds out for itself whether the owner is near home: one tool call.
+
+    ``result_path`` is where in the tool's JSON answer the state is ("data.state"), and
+    ``states`` are the values that count as near.
+    """
+
+    server: str
+    tool: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    result_path: str = Field(pattern=r"^[^.\s]+(\.[^.\s]+)*$")
+    states: Names
+
+
+class GateSettings(_Model):
+    """Timing for gated actions."""
+
+    hold_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)  # how long a held call waits for the passphrase
+    max_misses: int = Field(default=3, ge=1)  # wrong passphrases before every gated action is locked
+    lockout_minutes: float = Field(default=15, gt=0, allow_inf_nan=False)
+
+
 class RelayConfig(_Model):
     model: str = Field(default="claude-sonnet-5-5", min_length=1)
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = "low"
@@ -198,6 +220,17 @@ class RelayConfig(_Model):
     access: AccessConfig | None = None
     server: tuple[ServerConfig, ...] = ()
     gate: tuple[GateConfig, ...] = ()
+    near_home: NearHomeConfig | None = None
+    gates: GateSettings = GateSettings()
+
+    @model_validator(mode="after")
+    def _near_home_can_be_checked(self) -> RelayConfig:
+        names = {server.name for server in self.server}
+        if self.near_home is not None and self.near_home.server not in names:
+            raise ValueError(f"near_home names server {self.near_home.server!r}, which is not configured")
+        if self.near_home is None and any("near-home" in gate.require for gate in self.gate):
+            raise ValueError("a gate requires near-home, which needs a [near_home] table saying how to check it")
+        return self
 
     @model_validator(mode="after")
     def _gates_can_be_enforced(self) -> RelayConfig:

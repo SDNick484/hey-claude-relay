@@ -12,11 +12,16 @@ import base64
 import binascii
 import hashlib
 import hmac
+import json
 import os
 import re
+import time
 import unicodedata
+from collections.abc import Mapping
 
-from .config import ConfigError
+from .config import ConfigError, GateSettings, NearHomeConfig
+from .conversations import Clock
+from .mcp_client import TurnSession
 
 # --- the spoken passphrase ----------------------------------------------------------------
 # What the driver says reaches the relay as text from speech recognition, which is free with
@@ -147,3 +152,60 @@ def check_passphrase_hash(encoded: str) -> None:
             "RELAY_PASSPHRASE_HASH is not a hash made by `hey-claude-relay hash-passphrase`. "
             "Run that command and put the line it prints in the environment."
         )
+
+
+# --- wrong guesses ------------------------------------------------------------------------
+class GateKeeper:
+    """Counts wrong passphrases across every conversation, and locks all gated actions after too many.
+
+    One for the whole relay, in memory: a restart clears it.
+    """
+
+    def __init__(self, settings: GateSettings, clock: Clock = time.monotonic) -> None:
+        self._max = settings.max_misses
+        self._window = settings.lockout_minutes * 60
+        self._clock = clock
+        self._misses: list[float] = []
+        self._locked_until = float("-inf")
+
+    def locked(self) -> bool:
+        return self._clock() < self._locked_until
+
+    def miss(self) -> bool:
+        """Record a wrong passphrase. True when this one started a lockout."""
+        now = self._clock()
+        if now < self._locked_until:
+            return False  # already locked; a guess made meanwhile neither counts nor extends it
+        self._misses = [at for at in self._misses if now - at <= self._window] + [now]
+        if len(self._misses) < self._max:
+            return False
+        self._misses = []
+        self._locked_until = now + self._window
+        return True
+
+    def success(self) -> None:
+        """The right passphrase: earlier wrong guesses are forgotten."""
+        self._misses = []
+
+
+# --- near home ----------------------------------------------------------------------------
+class NearHome:
+    """Asks a server, on the relay's own account, where the owner is. Anything short of a clear
+    "near" is a no: an error, a timeout, an answer that cannot be read."""
+
+    def __init__(self, cfg: NearHomeConfig) -> None:
+        self.cfg = cfg
+
+    async def check(self, session: TurnSession, *, timeout: float) -> bool:
+        outcome = await session.call(self.cfg.server, self.cfg.tool, self.cfg.arguments, timeout=timeout)
+        if outcome.is_error:
+            return False
+        try:
+            value = json.loads(outcome.text)
+        except ValueError:
+            return False
+        for key in self.cfg.result_path.split("."):
+            if not isinstance(value, Mapping) or key not in value:
+                return False
+            value = value[key]
+        return isinstance(value, str) and value in self.cfg.states
