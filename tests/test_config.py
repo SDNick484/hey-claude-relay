@@ -183,3 +183,21 @@ def test_the_two_time_limits_must_fit_what_clients_wait(tmp_path):
 def test_values_that_make_no_sense_are_refused(tmp_path, line):
     with pytest.raises(ConfigError, match=line.split(" ")[0]):
         load(tmp_path, line + "\n")
+
+
+RESERVED = ["ANTHROPIC_API_KEY", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "RELAY_PASSPHRASE_HASH"]
+
+
+@pytest.mark.parametrize("name", RESERVED)
+def test_token_env_cannot_name_one_of_the_relays_own_secrets(tmp_path, name):
+    # Otherwise that secret would be sent to the MCP server as its bearer token.
+    with pytest.raises(ConfigError, match="token_env"):
+        load(tmp_path, SERVER + f'auth = "bearer"\ntoken_env = "{name}"\n', {name: "value"})
+
+
+def test_the_access_service_token_is_only_sent_over_https(tmp_path):
+    plain = '[[server]]\nname = "a"\nurl = "http://mcp.example.com/mcp"\nauth = "cf-service-token"\n'
+    with pytest.raises(ConfigError, match="https"):
+        load(tmp_path, plain, CF)
+    load(tmp_path, plain.replace("http://mcp.example.com", "http://127.0.0.1:9001"), CF)  # this machine is fine
+    load(tmp_path, plain.replace("http://", "https://"), CF)

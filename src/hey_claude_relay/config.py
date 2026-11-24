@@ -26,6 +26,9 @@ from pydantic import (
 )
 
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+# The relay's own secrets. A server's token_env may not name one, or it would be sent to that server.
+RESERVED_VARIABLES = ("ANTHROPIC_API_KEY", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "RELAY_PASSPHRASE_HASH")
+_LOOPBACK_URL = re.compile(r"^http://(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(/|$)")
 
 
 class ConfigError(ValueError):
@@ -85,6 +88,15 @@ class ServerConfig(_Model):
     def _token_env_goes_with_bearer(self) -> ServerConfig:
         if (self.auth == "bearer") != (self.token_env is not None):
             raise ValueError('token_env names the token\'s variable; set it with auth = "bearer" and only then')
+        if self.token_env in RESERVED_VARIABLES:
+            raise ValueError("token_env names one of the relay's own secrets, which would be sent to this server")
+        return self
+
+    @model_validator(mode="after")
+    def _service_token_goes_over_https(self) -> ServerConfig:
+        # The Access service token opens everything behind Access; it is not sent in the clear.
+        if self.auth == "cf-service-token" and not (self.url.startswith("https://") or _LOOPBACK_URL.match(self.url)):
+            raise ValueError('auth = "cf-service-token" needs an https:// url')
         return self
 
 
@@ -104,6 +116,9 @@ class RelayConfig(_Model):
     wrapup_seconds: float = Field(default=10, gt=0, allow_inf_nan=False)
     claude_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)  # the longest one call to Claude may take
     tools_ttl_seconds: float = Field(default=300, ge=0, allow_inf_nan=False)
+    # How long a server gets to answer with its tool list when a conversation starts. Short on
+    # purpose: this time comes out of the turn's own, and a server that hangs must not eat it.
+    list_seconds: float = Field(default=5, gt=0, allow_inf_nan=False)
     max_text_chars: int = Field(default=2000, gt=0)
     turns_per_minute: int = Field(default=30, gt=0)
     max_description_chars: int = Field(default=2000, ge=0)  # a longer tool description is cut there

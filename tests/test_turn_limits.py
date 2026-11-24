@@ -58,7 +58,7 @@ async def test_time_limit_ends_in_a_spoken_reply():
     started = time.perf_counter()
     script = [use(("matinee__slow", {}), ("matinee__slow", {})), say("Nothing yet")]
     async with sdk_stub("matinee", {"slow": slow}) as m:
-        async with make_relay("turn_seconds = 0.2\n" + MATINEE, *script, stubs=[m]) as r:
+        async with make_relay("turn_seconds = 1\n" + MATINEE, *script, stubs=[m]) as r:
             resp = await r.turn("look it up")
             assert_valid_history(only_conversation(r).messages)
     assert resp.status_code == 200 and time.perf_counter() - started < 5
@@ -70,12 +70,25 @@ async def test_time_limit_ends_in_a_spoken_reply():
     assert len(m.calls) == 1  # the second call was never sent
 
 
+async def test_a_server_that_hangs_on_listing_does_not_push_the_first_turn_past_its_limit():
+    started = time.perf_counter()
+    async with sdk_stub("matinee", {"search": lambda: "more"}) as m:
+        m.hang = True
+        toml = "turn_seconds = 2\nlist_seconds = 0.3\n" + MATINEE
+        async with make_relay(toml, say("I couldn't reach Matinee."), stubs=[m]) as r:
+            resp = await r.turn("what should we watch")
+    assert resp.status_code == 200 and resp.json()["reply"] == "I couldn't reach Matinee."
+    assert time.perf_counter() - started < 2
+    # the time spent listing came out of the turn's own limit
+    assert "matinee" in r.claude.calls[0]["system"] and r.claude.calls[0]["timeout"] < 1.8
+
+
 async def test_time_limit_while_claude_is_thinking():
     async def thinking(call):
         await anyio.sleep(30)
         return say("never heard")
 
-    async with make_relay("turn_seconds = 0.2\n", thinking, say("Short answer.")) as r:
+    async with make_relay("turn_seconds = 1\n", thinking, say("Short answer.")) as r:
         resp = await r.turn("a hard one")
         assert_valid_history(only_conversation(r).messages)
     assert resp.status_code == 200 and resp.json()["reply"] == "Short answer. I ran out of time before I could finish."

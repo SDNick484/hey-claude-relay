@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+import anyio
 import httpx2
 from mcp.server.mcpserver import MCPServer
 from starlette.applications import Starlette
@@ -30,6 +31,7 @@ class Stub:
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     headers: list[dict[str, str]] = field(default_factory=list)
     fail: bool = False  # True: answer every request the way Access answers a caller it does not admit
+    hang: bool = False  # True: accept every request and never answer
 
 
 class _Front:
@@ -41,6 +43,8 @@ class _Front:
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "http":
             self.stub.headers.append({k.decode().lower(): v.decode() for k, v in scope["headers"]})
+            if self.stub.hang:
+                await anyio.sleep(3600)
             if self.stub.fail:
                 await Response(status_code=302, headers={"location": LOGIN_PAGE})(scope, receive, send)
                 return
@@ -80,10 +84,16 @@ async def sdk_stub(name: str, tools: Mapping[str, Callable[..., Any]]) -> AsyncI
 
 
 LEGACY_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+GARBLED = object()  # a legacy stub tool returns this to answer with a body no client can read
 
 
-def legacy_stub(name: str, tools: Mapping[str, Callable[[dict[str, Any]], Any]]) -> Stub:
-    """A hand-written stateless JSON-RPC endpoint: older protocol, POST only, no session."""
+def legacy_stub(
+    name: str, tools: Mapping[str, Callable[[dict[str, Any]], Any]], *, listing: list[dict[str, Any]] | None = None
+) -> Stub:
+    """A hand-written stateless JSON-RPC endpoint: older protocol, POST only, no session.
+
+    ``listing`` replaces what tools/list answers, for a server whose tool list is odd.
+    """
     stub = Stub(name=name)
 
     def answer(mid: Any, result: Any) -> JSONResponse:
@@ -108,9 +118,8 @@ def legacy_stub(name: str, tools: Mapping[str, Callable[[dict[str, Any]], Any]])
             )
         if method == "tools/list":
             schema = {"type": "object", "properties": {"query": {"type": "string"}}}
-            return answer(
-                mid, {"tools": [{"name": n, "description": f"The {n} tool.", "inputSchema": schema} for n in tools]}
-            )
+            listed = [{"name": n, "description": f"The {n} tool.", "inputSchema": schema} for n in tools]
+            return answer(mid, {"tools": listing if listing is not None else listed})
         if method == "tools/call":
             tool, arguments = params.get("name"), params.get("arguments") or {}
             if tool not in tools:
@@ -119,6 +128,9 @@ def legacy_stub(name: str, tools: Mapping[str, Callable[[dict[str, Any]], Any]])
                 )
             stub.calls.append((tool, arguments))
             result = tools[tool](arguments)
+            if result is GARBLED:  # the tool ran, and then the answer was lost on the way back
+                body = b'{"jsonrpc": "2.0", "id": ' + json.dumps(mid).encode() + b', "result": {"content": 7}}'
+                return Response(body, media_type="application/json")
             return answer(mid, {"content": [{"type": "text", "text": json.dumps(result)}], "structuredContent": result})
         return JSONResponse(
             {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"Method not found: {method}"}}

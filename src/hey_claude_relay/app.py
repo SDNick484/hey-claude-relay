@@ -213,6 +213,7 @@ def create_app(
         clock=clock,
         transport_for=transport_for,
         max_description_chars=cfg.max_description_chars,
+        list_seconds=cfg.list_seconds,
     )
     app = Starlette(
         routes=[

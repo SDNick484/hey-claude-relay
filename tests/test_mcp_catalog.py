@@ -155,3 +155,52 @@ async def test_a_failed_listing_is_tried_again_after_thirty_seconds():
 async def test_no_servers_is_an_empty_catalog():
     cat = await servers("").catalog()
     assert cat.specs == () and cat.unavailable == () and cat.tools() == []
+
+
+async def test_listing_has_its_own_short_time_limit():
+    import time
+
+    async with sdk_stub("matinee", {"a": lambda: "x"}) as ok, sdk_stub("house", {"b": lambda: "x"}) as stuck:
+        stuck.hang = True
+        started = time.perf_counter()
+        cat = await servers("list_seconds = 0.2\n" + TWO_SERVERS, ok, stuck).catalog()
+    assert time.perf_counter() - started < 3  # not the server's own 20 second timeout
+    assert [s.server for s in cat.specs] == ["matinee"] and cat.unavailable == ("house",)
+
+
+SCHEMA = {"type": "object", "properties": {"query": {"type": "string"}}}
+
+
+async def test_a_tool_listed_twice_is_offered_once(caplog):
+    listing = [
+        {"name": "search_recipes", "description": "first", "inputSchema": SCHEMA},
+        {"name": "search_recipes", "description": "second", "inputSchema": SCHEMA},
+    ]
+    stub = legacy_stub("cookbooks", {"search_recipes": lambda a: {}}, listing=listing)
+    cat = await servers(COOKBOOKS_NONE, stub).catalog()
+    assert [t["name"] for t in cat.tools()] == ["cookbooks__search_recipes"] and cat.tools()[0][
+        "description"
+    ] == "first"
+    assert any("search_recipes" in r.getMessage() and "twice" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_tool_whose_schema_claude_would_refuse_is_left_out(caplog):
+    listing = [
+        {"name": "good", "inputSchema": SCHEMA},
+        {"name": "either_or", "inputSchema": {"type": "object", "oneOf": [SCHEMA, SCHEMA]}},
+        {"name": "any_of", "inputSchema": {"type": "object", "anyOf": [SCHEMA]}},
+        {"name": "bare", "inputSchema": {"type": "object"}},
+    ]
+    stub = legacy_stub("cookbooks", {}, listing=listing)
+    cat = await servers(COOKBOOKS_NONE, stub).catalog()
+    assert [s.name for s in cat.specs] == ["bare", "good"]
+    left_out = [r.getMessage() for r in caplog.records if "left out" in r.getMessage()]
+    assert len(left_out) == 2 and "either_or" in "".join(left_out) and "any_of" in "".join(left_out)
+
+
+async def test_a_listing_the_client_cannot_read_makes_that_server_unavailable_only():
+    # The MCP client itself refuses a tool list holding a schema that is not an object.
+    stub = legacy_stub("cookbooks", {}, listing=[{"name": "odd", "inputSchema": {"type": "string"}}])
+    async with sdk_stub("matinee", {"a": lambda: "x"}) as ok:
+        cat = await servers(MATINEE + COOKBOOKS_NONE, ok, stub).catalog()
+    assert [s.label for s in cat.specs] == ["matinee.a"] and cat.unavailable == ("cookbooks",)
