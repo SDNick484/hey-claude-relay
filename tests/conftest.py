@@ -70,6 +70,7 @@ tools = ["ha_search", "ha_get_state", "ha_call_service"]
 HOUSE_POLICY = (
     HOUSE
     + """service_from = { ha_call_service = "{domain}.{service}" }
+service_args = { ha_call_service = ["entity_id", "data"] }
 allow_services = ["light.*", "cover.open_cover", "cover.close_cover"]
 deny_services = ["lock.unlock", "alarm_control_panel.alarm_disarm"]
 """

@@ -137,3 +137,14 @@ def test_a_bad_hash_is_reported_without_being_repeated():
 
 def test_no_gate_no_hash_needed():
     load_toml(HOUSE_POLICY)
+
+
+def test_a_phrase_with_no_words_in_it_never_verifies():
+    assert verify_passphrase("!!!", hash_passphrase("...")) is False
+
+
+def test_a_hash_asking_for_more_memory_than_scrypt_is_given_is_refused_at_startup():
+    heavy = "scrypt:131072:16:1:AAAAAAAAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    with pytest.raises(ConfigError, match="RELAY_PASSPHRASE_HASH"):
+        check_passphrase_hash(heavy)
+    assert verify_passphrase("open sesame", heavy) is False

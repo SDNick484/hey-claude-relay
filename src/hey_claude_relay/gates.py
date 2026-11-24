@@ -96,6 +96,7 @@ def normalize_passphrase(text: str) -> str:
 # is short: if the hash leaks, guessing must stay slow.
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
 _SALT_BYTES, _KEY_BYTES = 16, 32
+_MAX_MEMORY = 128 * 1024 * 1024  # scrypt needs 128 * n * r bytes; more than this is refused too
 _MAX_N = 2**17  # a hash asking for more work than this is refused: it would stall every attempt
 
 
@@ -109,7 +110,7 @@ def _unb64(text: str) -> bytes:
 
 def _derive(phrase: str, salt: bytes, n: int, r: int, p: int, length: int) -> bytes:
     spoken = normalize_passphrase(phrase).encode()
-    return hashlib.scrypt(spoken, salt=salt, n=n, r=r, p=p, dklen=length, maxmem=256 * 1024 * 1024)
+    return hashlib.scrypt(spoken, salt=salt, n=n, r=r, p=p, dklen=length, maxmem=2 * _MAX_MEMORY)
 
 
 def _parse(encoded: str) -> tuple[int, int, int, bytes, bytes] | None:
@@ -123,7 +124,7 @@ def _parse(encoded: str) -> tuple[int, int, int, bytes, bytes] | None:
     except (ValueError, binascii.Error):
         return None
     sane = 2 <= n <= _MAX_N and n & (n - 1) == 0 and 1 <= r <= 16 and 1 <= p <= 4
-    if not sane or len(salt) < 8 or len(key) < 16:
+    if not sane or 128 * n * r > _MAX_MEMORY or len(salt) < 8 or len(key) < 16:
         return None
     return n, r, p, salt, key
 
@@ -142,7 +143,8 @@ def verify_passphrase(attempt: str, encoded: str) -> bool:
         return False
     n, r, p, salt, key = parsed
     # Always derive and always compare whole keys, so a miss costs the same as a match.
-    return hmac.compare_digest(_derive(attempt, salt, n, r, p, len(key)), key)
+    matched = hmac.compare_digest(_derive(attempt, salt, n, r, p, len(key)), key)
+    return matched and bool(normalize_passphrase(attempt))  # a phrase with no words in it is never right
 
 
 def check_passphrase_hash(encoded: str) -> None:
