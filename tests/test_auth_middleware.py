@@ -18,13 +18,13 @@ def access_app():
     """The relay behind Access: the test key stands in for Cloudflare's."""
     cfg = RelayConfig(access=AccessConfig(team_domain=TEAM, audiences=(AUD,), service_tokens=(CALLER,)))
     verifier = AccessVerifier(AccessPolicy.from_config(cfg.access), resolver)
-    return create_app(cfg, Secrets(), verifier=verifier)
+    return create_app(cfg, Secrets(anthropic_api_key="test-key-not-real"), verifier=verifier)
 
 
 @pytest.fixture
 def local_app():
     """No [access] table: this machine only."""
-    return create_app(RelayConfig(), Secrets())
+    return create_app(RelayConfig(), Secrets(anthropic_api_key="test-key-not-real"))
 
 
 async def post(app, headers=None):
@@ -143,7 +143,7 @@ async def test_without_access_a_loopback_origin_is_served(local_app, origin):
 @pytest.fixture
 def lan_test_app():
     """--insecure-no-auth: a deliberate test on a trusted LAN."""
-    return create_app(RelayConfig(), Secrets(), insecure_no_auth=True)
+    return create_app(RelayConfig(), Secrets(anthropic_api_key="test-key-not-real"), insecure_no_auth=True)
 
 
 @pytest.mark.parametrize("host", ["192.0.2.10:8787", "localhost:8787", "[2001:db8::10]:8787", "127.0.0.1"])
@@ -166,7 +166,7 @@ async def test_insecure_no_auth_still_refuses_a_cross_site_request(lan_test_app)
 async def test_an_access_table_turns_the_check_on_by_itself(insecure):
     # No verifier handed in: this is the line production relies on. No network is needed to refuse.
     cfg = RelayConfig(access=AccessConfig(team_domain=TEAM, audiences=(AUD,), service_tokens=(CALLER,)))
-    app = create_app(cfg, Secrets(), insecure_no_auth=insecure)
+    app = create_app(cfg, Secrets(anthropic_api_key="test-key-not-real"), insecure_no_auth=insecure)
     r = await post(app, {"Host": "localhost"})
     assert r.status_code == 403 and r.json() == UNAUTHORIZED
 
@@ -178,7 +178,11 @@ async def test_a_denial_cannot_forge_a_log_line(caplog):
         raise jwt.PyJWKClientError("Unable to find a signing key that matches: 'x\nWARNING all is well'")
 
     cfg = RelayConfig(access=AccessConfig(team_domain=TEAM, audiences=(AUD,), service_tokens=(CALLER,)))
-    app = create_app(cfg, Secrets(), verifier=AccessVerifier(AccessPolicy.from_config(cfg.access), no_such_key))
+    app = create_app(
+        cfg,
+        Secrets(anthropic_api_key="test-key-not-real"),
+        verifier=AccessVerifier(AccessPolicy.from_config(cfg.access), no_such_key),
+    )
     caplog.set_level(logging.WARNING)
     async with client_for(app) as c:
         await c.post("/v1/x%0AWARNING%20all%20is%20well", headers={"Cf-Access-Jwt-Assertion": mint()})
@@ -198,7 +202,8 @@ def test_serving_beyond_loopback_needs_access():
         check_bind(loopback, access=False, insecure_no_auth=False)
 
 
-def test_serve_refuses_an_open_bind_without_access(tmp_path, capsys):
+def test_serve_refuses_an_open_bind_without_access(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     cfg = tmp_path / "relay.toml"
     cfg.write_text("")
     assert main(["serve", "--config", str(cfg), "--bind", "0.0.0.0"]) == 2

@@ -5,9 +5,13 @@ from hey_claude_relay.__main__ import listen_address, main
 from hey_claude_relay.config import ConfigError
 
 
-def test_check_config_exit_codes(tmp_path, capsys, monkeypatch):
+@pytest.fixture(autouse=True)
+def example_environment(monkeypatch):
     for k, v in EXAMPLE_ENV.items():
         monkeypatch.setenv(k, v)
+
+
+def test_check_config_exit_codes(tmp_path, capsys):
     bad = tmp_path / "relay.toml"
     bad.write_text('modle = "x"\n')
     assert main(["check-config", "--config", str(bad)]) == 2
@@ -42,3 +46,11 @@ def test_check_config_reads_the_prompt_file_too(tmp_path, capsys):
     assert "voice.md" in capsys.readouterr().err
     (tmp_path / "voice.md").write_text("Be brief.\n")
     assert main(["check-config", "--config", str(cfg)]) == 0
+
+
+def test_check_config_needs_the_api_key(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    cfg = tmp_path / "relay.toml"
+    cfg.write_text("")
+    assert main(["check-config", "--config", str(cfg)]) == 2
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err

@@ -48,11 +48,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build the image
         run: docker build --build-arg GIT_COMMIT="$GITHUB_SHA" -t relay:ci .
+      # Placeholders, not secrets: nothing in this job reaches a real service.
+      - name: Write a placeholder environment file
+        run: |
+          cat > ci.env <<'ENV'
+          ANTHROPIC_API_KEY=placeholder-not-a-real-key
+          ENV
+          sed -i 's/^ *//' ci.env
       - name: The example configuration is usable
-        run: docker run --rm -v "$PWD/relay.example.toml:/config/relay.toml:ro" relay:ci check-config
+        run: docker run --rm --env-file ci.env -v "$PWD/relay.example.toml:/config/relay.toml:ro" relay:ci check-config
       - name: Start the relay
         run: |
-          docker run -d --name relay -p 127.0.0.1:8787:8787 \
+          docker run -d --name relay -p 127.0.0.1:8787:8787 --env-file ci.env \
             -v "$PWD/relay.example.toml:/config/relay.toml:ro" relay:ci
       - name: /healthz answers and names this commit
         run: |
