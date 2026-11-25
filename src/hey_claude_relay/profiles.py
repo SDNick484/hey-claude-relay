@@ -7,7 +7,8 @@ be picked. A name the caller may not use, or that does not exist, is no profile 
 
 With no ``[[caller]]`` tables there is one caller, as before profiles: every admitted token is
 ``default``, or the relay's only caller is ``local``. With no ``[[profile]]`` tables every caller
-runs under EVERYTHING, which is the relay's rules with nothing taken away.
+runs under EVERYTHING, which is the relay's rules with nothing taken away, and a ``profile`` in
+the request is ignored.
 """
 
 from __future__ import annotations
@@ -52,9 +53,11 @@ class Roster:
         return self._by_token.get(identity)
 
     def choose(self, caller: Caller, requested: str | None) -> ProfileConfig | None:
-        """The profile a turn runs under: the one asked for if this caller may use it, else None."""
-        if requested is None:
+        """The profile a turn runs under: the one asked for if this caller may use it, else None.
+
+        With no [[profile]] tables the request's choice is ignored and the turn runs under the
+        relay's own rules, so a client that always sends a profile works against such a relay.
+        """
+        if requested is None or not self._named:
             return caller.profiles[0]
-        if not self._named:
-            return None
         return next((profile for profile in caller.profiles if profile.name == requested), None)
