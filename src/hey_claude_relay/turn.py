@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -25,7 +26,7 @@ import anyio.to_thread
 from anthropic.types import Message
 
 from .claude import ClaudeClient, text_of
-from .config import ConfigError, RelayConfig, Secrets, prompt_text
+from .config import ConfigError, ProfileConfig, RelayConfig, Secrets, prompt_text_at
 from .conversations import Clock, Conversation, ConversationStore, PendingGate
 from .errors import (
     ASK,
@@ -40,9 +41,10 @@ from .errors import (
     TOO_LATE,
     RelayError,
 )
-from .gates import CANCEL_WORDS, GateKeeper, NearHome, normalize_passphrase, verify_passphrase
+from .gates import CANCEL_WORDS, Lockouts, NearHome, normalize_passphrase, verify_passphrase
 from .mcp_client import McpServers, TurnSession
 from .policy import Hold, Policy, Refuse, ToolCall
+from .profiles import EVERYTHING
 from .speech import strip_markdown
 
 log = logging.getLogger(__name__)
@@ -126,7 +128,7 @@ class TurnRunner:
         store: ConversationStore,
         servers: McpServers,
         policy: Policy,
-        keeper: GateKeeper,
+        lockouts: Lockouts,
         near_home: NearHome | None,
         secrets: Secrets,
         *,
@@ -137,32 +139,42 @@ class TurnRunner:
         self.store = store
         self.servers = servers
         self.policy = policy
-        self.keeper = keeper
+        self.lockouts = lockouts
         self.near_home = near_home
         self._passphrase_hash = secrets.passphrase_hash or ""
         self._clock = clock
-        self._last_prompt: str | None = None
+        self._last_prompts: dict[Path | None, str] = {}
 
-    def _voice_prompt(self) -> str:
-        """The voice prompt, read now. If the file has gone missing, the last one read is used."""
+    def _voice_prompt(self, path: Path | None) -> str:
+        """The voice prompt in ``path``, read now. If the file has gone missing, the last one read is used."""
         try:
-            self._last_prompt = prompt_text(self.cfg)
+            self._last_prompts[path] = prompt_text_at(path)
         except ConfigError as exc:
-            if self._last_prompt is None:
+            if path not in self._last_prompts:
                 raise
             log.error("%s Using the prompt read earlier.", exc)
-        return self._last_prompt
+        return self._last_prompts[path]
 
-    async def _start(self) -> Conversation:
-        """A new conversation. Its prompt and its tool list are fixed here, for its whole life."""
-        catalog = await self.servers.catalog()
-        system = f"{self._voice_prompt()}\n\n{SAFETY_RULES}"
+    async def _start(self, caller: str, profile: ProfileConfig) -> Conversation:
+        """A new conversation. Its prompt, its tool list and its profile are fixed here, for its whole life."""
+        catalog = (await self.servers.catalog()).narrowed(profile)
+        system = f"{self._voice_prompt(profile.prompt_file or self.cfg.prompt_file)}\n\n{SAFETY_RULES}"
         if catalog.unavailable:
             system += "\n\n" + UNAVAILABLE_NOTE.format(names=", ".join(catalog.unavailable))
-        return self.store.start(system, catalog.tools(), catalog)
+        return self.store.start(system, catalog.tools(), catalog, caller=caller, profile=profile)
 
-    async def run(self, text: str, conversation_id: str | None, *, secret: bool = False) -> TurnResult:
-        """Answer one turn. An unknown or expired ``conversation_id`` starts a new conversation.
+    async def run(
+        self,
+        text: str,
+        conversation_id: str | None,
+        *,
+        secret: bool = False,
+        caller: str,
+        profile: ProfileConfig,
+    ) -> TurnResult:
+        """Answer one turn for ``caller`` under ``profile``. An unknown or expired ``conversation_id``
+        starts a new conversation, and so does one that is another caller's or that started under
+        another profile.
 
         When a call is being held on the conversation, ``text`` is the passphrase attempt and
         nothing else is done with it. ``secret`` is the client saying the same thing from its
@@ -172,7 +184,10 @@ class TurnRunner:
         # The clock starts here, so asking the servers for their tools (a new conversation) and
         # waiting behind another turn both come out of this turn's time, not on top of it.
         deadline = anyio.current_time() + self.cfg.turn_seconds
-        conversation = self.store.get(conversation_id) or await self._start()
+        conversation = self.store.get(conversation_id, owner=caller)
+        if conversation is not None and (conversation.profile or EVERYTHING).name != profile.name:
+            conversation = None  # a conversation keeps the profile it started with; the old one is left to expire
+        conversation = conversation or await self._start(caller, profile)
         async with conversation.lock:
             if conversation.pending is not None:
                 return await self._resume(conversation, conversation.pending, text, deadline)
@@ -362,12 +377,12 @@ class TurnRunner:
         timeout = min(self.servers.by_name[spec.server].timeout_seconds, progress.time_left())
         # The relay's own rules, applied to every call before anything is sent.
         asked = ToolCall(spec.server, spec.name, call.input)
-        decision = self.policy.decide(asked)
+        decision = self.policy.decide(asked, conversation.profile or EVERYTHING)
         if isinstance(decision, Refuse):
             return _result(call.id, decision.message, True)
         if isinstance(decision, Hold):
             require = decision.gate.require
-            if self.keeper.locked():
+            if self.lockouts.of(conversation.caller).locked():
                 return _result(call.id, LOCKED, True)
             if holding:
                 return _result(call.id, ONE_AT_A_TIME, True)
@@ -392,11 +407,12 @@ class TurnRunner:
         """Settle a held call. ``attempt`` is used for the comparison and nothing else."""
         # Whatever happens next, the held call cannot be tried a second time.
         conversation.pending = None
+        keeper = self.lockouts.of(conversation.caller)  # misses count against this caller only
         if self._clock() > pending.expires_at:
             return self._drop(conversation, pending, TOO_LATE, "gate_expired")
         if normalize_passphrase(attempt) in CANCEL_WORDS:
             return self._drop(conversation, pending, CANCELLED, "gate_cancelled")
-        if self.keeper.locked():
+        if keeper.locked():
             # Locked by wrong guesses elsewhere while this call waited: not compared, not counted.
             return self._drop(conversation, pending, MISS, "gate_locked")
         # scrypt is slow on purpose; off the event loop it goes.
@@ -408,15 +424,15 @@ class TurnRunner:
             log.error("The passphrase check failed to run (%s); the held call was dropped", type(exc).__name__)
             self._drop(conversation, pending, INTERNAL, "error:internal")
             raise RelayError("internal", INTERNAL) from None
-        if self.keeper.locked():
+        if keeper.locked():
             # Locked while this comparison was running (several attempts at once): too late.
             return self._drop(conversation, pending, MISS, "gate_locked")
         if not matched:
-            if self.keeper.miss():
+            if keeper.miss():
                 line = LOCKED_NOW.format(minutes=self.cfg.gates.lockout_minutes)
                 return self._drop(conversation, pending, line, "gate_locked")
             return self._drop(conversation, pending, MISS, "gate_miss")
-        self.keeper.success()
+        keeper.success()
         progress = _Progress(mark=len(conversation.messages), deadline=deadline, used=[pending.label], ran_a_tool=True)
         return await self._drive(conversation, progress, pending)
 
