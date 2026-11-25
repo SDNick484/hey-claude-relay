@@ -1,8 +1,9 @@
 import logging
 
 from conftest import COOKBOOKS_BEARER, COOKBOOKS_NONE, MATINEE, TWO_SERVERS, FakeClock, load_toml, servers
-from hey_claude_relay.config import Secrets
-from hey_claude_relay.mcp_client import auth_headers
+from hey_claude_relay.config import ProfileConfig, Secrets
+from hey_claude_relay.mcp_client import Catalog, ToolSpec, auth_headers
+from hey_claude_relay.profiles import EVERYTHING
 from stubs import legacy_stub, sdk_stub
 
 
@@ -204,3 +205,27 @@ async def test_a_listing_the_client_cannot_read_makes_that_server_unavailable_on
     async with sdk_stub("matinee", {"a": lambda: "x"}) as ok:
         cat = await servers(MATINEE + COOKBOOKS_NONE, ok, stub).catalog()
     assert [s.label for s in cat.specs] == ["matinee.a"] and cat.unavailable == ("cookbooks",)
+
+
+def _spec(server: str, name: str) -> ToolSpec:
+    return ToolSpec(server, name, f"{server}__{name}", "", {"type": "object"})
+
+
+CATALOG = Catalog(
+    (_spec("house", "ha_get_state"), _spec("house", "ha_call_service"), _spec("matinee", "search")),
+    ("cookbooks",),
+)
+
+
+def test_narrowed_catalog_offers_only_the_profiles_servers_and_tools():
+    house_only = CATALOG.narrowed(ProfileConfig(name="shared", servers=("house",)))
+    assert [s.label for s in house_only.specs] == ["house.ha_get_state", "house.ha_call_service"]
+    lookups = CATALOG.narrowed(ProfileConfig(name="lookups", tools=("house.ha_get_*", "matinee.search")))
+    assert [s.label for s in lookups.specs] == ["house.ha_get_state", "matinee.search"]
+    assert CATALOG.narrowed(EVERYTHING) == CATALOG
+
+
+def test_narrowed_catalog_keeps_only_the_profiles_unavailable_servers():
+    assert CATALOG.narrowed(ProfileConfig(name="shared", servers=("house",))).unavailable == ()
+    assert CATALOG.narrowed(ProfileConfig(name="food", servers=("cookbooks",))) == Catalog((), ("cookbooks",))
+    assert CATALOG.narrowed(ProfileConfig(name="none", servers=())) == Catalog((), ())

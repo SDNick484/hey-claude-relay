@@ -24,7 +24,7 @@ from anyio.abc import TaskGroup
 from mcp import Client, MCPError
 from mcp.client.streamable_http import streamable_http_client
 
-from .config import Secrets, ServerConfig
+from .config import ProfileConfig, Secrets, ServerConfig
 from .conversations import Clock
 
 log = logging.getLogger(__name__)
@@ -93,6 +93,20 @@ class Catalog:
 
     def find(self, claude_name: str) -> ToolSpec | None:
         return next((spec for spec in self.specs if spec.claude_name == claude_name), None)
+
+    def narrowed(self, profile: ProfileConfig) -> Catalog:
+        """What ``profile`` may see of this catalog: only its servers, and of those only its tools."""
+
+        def wanted(server: str) -> bool:
+            return profile.servers is None or server in profile.servers
+
+        specs = tuple(
+            spec
+            for spec in self.specs
+            if wanted(spec.server)
+            and (profile.tools is None or any(fnmatch.fnmatchcase(spec.label, p) for p in profile.tools))
+        )
+        return Catalog(specs, tuple(name for name in self.unavailable if wanted(name)))
 
 
 class McpServers:

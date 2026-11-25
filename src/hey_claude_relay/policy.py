@@ -17,7 +17,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .config import GateConfig, ServerConfig, template_fields
+from .config import GateConfig, ProfileConfig, ServerConfig, template_fields
+from .profiles import EVERYTHING
 
 DENIED = "Refused by the relay: {what} is not allowed by voice. Tell the driver plainly and do not try another way."
 UNREADABLE = "Refused by the relay: it could not tell which service this call uses, so nothing was done."
@@ -26,6 +27,14 @@ EXTRA_ARGUMENT = (
     "so nothing was done."
 )
 UNKNOWN_SERVER = "Refused by the relay: it has no rules for the server this tool belongs to, so nothing was done."
+# From a profile: what this device may not reach, and a gated action it may not be prompted for.
+NOT_HERE = (
+    "Refused by the relay: {what} is not available from this device. Tell the user plainly and do not try another way."
+)
+NO_PROMPT_HERE = (
+    "Refused by the relay: {what} needs a passphrase, which cannot be given from this device. "
+    "Tell the user plainly and do not try another way."
+)
 
 
 @dataclass(frozen=True)
@@ -85,10 +94,16 @@ class Policy:
             parts[name] = value.strip().casefold()
         return template.format_map(parts) if parts else None
 
-    def decide(self, call: ToolCall) -> Decision:
+    def decide(self, call: ToolCall, profile: ProfileConfig = EVERYTHING) -> Decision:
+        """The relay's answer to ``call``. ``profile`` can only take away from what the servers allow."""
         server = self._servers.get(call.server)
         if server is None:
             return Refuse(UNKNOWN_SERVER)
+        if profile.servers is not None and call.server not in profile.servers:
+            return Refuse(NOT_HERE.format(what=call.server))
+        label = f"{call.server}.{call.tool}"
+        if profile.tools is not None and not any(fnmatch.fnmatchcase(label, p) for p in profile.tools):
+            return Refuse(NOT_HERE.format(what=label))
         service = self.service_of(call)
         if call.tool in server.service_from:
             if service is None:
@@ -106,9 +121,13 @@ class Policy:
                 return Refuse(DENIED.format(what=service))
             if server.allow_services and not _matches(service, server.allow_services):
                 return Refuse(DENIED.format(what=service))
+            if profile.allow_services and not _matches(service, profile.allow_services):
+                return Refuse(DENIED.format(what=service))
         for gate in self._gates:
             if gate.server != call.server or not fnmatch.fnmatchcase(call.tool, gate.match.tool):
                 continue
             if gate.match.service is None or (service is not None and _matches(service, [gate.match.service])):
+                if profile.gated == "refuse":
+                    return Refuse(NO_PROMPT_HERE.format(what=service or label))
                 return Hold(gate)
         return Allow()
