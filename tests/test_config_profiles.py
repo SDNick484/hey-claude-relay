@@ -183,3 +183,17 @@ def test_a_bad_caller_or_profile_stops_startup(tmp_path, what, text, key):
     message = str(caught.value)
     assert key in message, message
     assert CALLER_TOKEN not in message and "speaker-token-client-id" not in message
+
+
+def test_example_config_has_callers_and_profiles():
+    from pathlib import Path
+
+    from conftest import EXAMPLE_ENV
+
+    cfg, _ = load_config(Path("relay.example.toml"), EXAMPLE_ENV)
+    assert [c.name for c in cfg.caller] == ["phone", "home-assistant"]
+    assert cfg.caller[1].profiles == ("office", "shared")
+    assert [p.name for p in cfg.profile] == ["personal", "office", "shared"]
+    shared = cfg.profile[2]
+    assert shared.gated == "refuse" and shared.servers == ("cookbooks", "matinee", "home-assistant")
+    assert shared.allow_services == ("light.*", "fan.*", "media_player.*")

@@ -28,7 +28,8 @@ and `CF-Access-Client-Secret` headers. Access turns that into a signed
   "text": "what the driver said",
   "conversation_id": "optional, omit to start a conversation",
   "client": "android-auto",
-  "secret": false }
+  "secret": false,
+  "profile": "optional, one of the profiles this caller may use" }
 ```
 
 `200`:
@@ -50,6 +51,13 @@ and `CF-Access-Client-Secret` headers. Access turns that into a signed
   call for that conversation, it answers `200` with a spoken line saying nothing was done.
 - An unknown or expired `conversation_id` starts a new conversation and returns the new id.
   It is not an error.
+- `profile` is optional. Omitted, the turn runs under the caller's first profile. A profile the
+  caller's service token may not use, or one that does not exist, is `403` with code
+  `unauthorized`, and nothing runs. A relay with no profiles configured refuses any named one.
+- A conversation keeps the profile it started with. A turn that names another profile on an
+  existing conversation starts a new one and returns its id.
+- Replay and conversations belong to the caller: another caller's `turn_id` never answers with
+  this caller's reply, and another caller's `conversation_id` is treated as unknown.
 
 The response is a single JSON body with no streaming. Clients should allow 60 seconds.
 
@@ -65,7 +73,7 @@ Read `spoken` aloud when it is present. Decide what to do from `code`, not from 
 
 | `code` | Status | Meaning |
 | --- | --- | --- |
-| `unauthorized` | 403 | no valid Access assertion, or a service token that is not on the allow-list |
+| `unauthorized` | 403 | no valid Access assertion, a service token that is not on the allow-list, or a `profile` this caller may not use |
 | `bad_request` | 400 (404, 405) | the request could not be understood |
 | `upstream_timeout` | 504 | Claude did not answer in time |
 | `upstream_error` | 502 | Claude could not be reached |
@@ -165,6 +173,20 @@ for is checked before anything is sent, and nothing Claude reads can change the 
   - Three misses lock every gated action for 15 minutes.
   - One call can be held per conversation.
 
+- **Profiles.** A `[[caller]]` is one service token and the profiles it may use; a `[[profile]]`
+  is the rules for one place (the phone, an office, a room anyone may use). The request names the
+  profile, and the caller's token decides which names it may use.
+  - A profile only takes away: `servers`, `tools` (`"server.tool"` globs) and `allow_services`
+    narrow what the server sections allow, and a profile naming anything they do not allow
+    stops startup. On every call both the server's rules and the profile's apply.
+  - `gated = "refuse"` refuses any call that matches a gate, with no near-home check and no
+    passphrase prompt, so a room speaker can never be asked for the phrase. `gated = "allow"`
+    holds it as above. Once a gate exists, every profile must say which.
+  - Wrong passphrases are counted per caller: misses on a room speaker do not lock the phone out.
+  - A profile may have its own `prompt_file`.
+  - Without `[[caller]]` and `[[profile]]` tables the relay behaves as one caller with every rule
+    above, as before. Without `[access]`, this machine is the one caller and may use every profile.
+
 What a gate is for: stopping a misheard command, or text inside a tool result, from doing
 something that matters. What it is not: protection from someone who has heard the phrase said
 in the car. The real credential is the caller's Access service token, and the speech recogniser
@@ -178,8 +200,8 @@ uv run hey-claude-relay hash-passphrase          # or: docker run --rm -it hey-c
 
 Choose three or more words, no numbers, and nothing you would say in the car for another reason.
 
-Turns are logged one line each: conversation (first eight characters), client, outcome, rounds,
-tools and duration. What was said and what was answered are logged only at
+Turns are logged one line each: conversation (first eight characters), client, caller, profile
+(`-` when none are configured), outcome, rounds, tools and duration. What was said and what was answered are logged only at
 `RELAY_LOG_LEVEL=debug`, and a turn marked `secret` is never logged at any level.
 
 Without an `[access]` table the relay serves this machine only: it refuses to start on any
@@ -210,7 +232,12 @@ has every key with comments.
 | `max_text_chars` | `2000` | a longer `text` is a `bad_request` |
 | `turns_per_minute` | `30` | more than this answers `rate_limited` |
 | `max_description_chars` | `2000` | a longer tool description is cut there |
-| `[access]` `team_domain`, `audiences`, `service_tokens` | none | the Access application in front of the relay and the service-token client IDs allowed to call it; without the table the relay serves this machine only |
+| `[access]` `team_domain`, `audiences` | none | the Access application in front of the relay; without the table the relay serves this machine only |
+| `[access]` `service_tokens` | none | the service-token client IDs allowed to call the relay, for a config with no `[[caller]]`; use one or the other, not both |
+| `[[caller]]` `name`, `token`, `profiles` | none | a service token (its client ID) allowed to call the relay, and the profiles it may use, the first being its default |
+| `[[profile]]` `name`, `gated` | none | a rule set a caller may choose; `gated` is `allow` or `refuse`, required once a `[[gate]]` exists |
+| `[[profile]]` `servers`, `tools`, `allow_services` | all, all, none | what the profile keeps of the server sections: server names, `"server.tool"` globs, service globs; they can only narrow |
+| `[[profile]]` `prompt_file` | the relay's | voice instructions for this profile, a path beside `relay.toml` |
 | `[[server]]` `name`, `url`, `auth` | required | an MCP server; `auth` is `cf-service-token`, `bearer` or `none` |
 | `[[server]]` `token_env` | none | with `auth = "bearer"`: the environment variable holding that server's token |
 | `[[server]]` `tools`, `deny` | all, none | allow-list and deny-list of tool names (globs) |
@@ -251,11 +278,12 @@ containing `$`, `#` or a quote needs care, because Compose treats those speciall
    is *Service Auth*. Put its AUD tag (shown on the application's overview page) in `[access] audiences` and your team domain
    (`<team>.cloudflareaccess.com`) in `[access] team_domain`.
 2. **A service token for the phone.** Create a service token and add it to that policy. Put its
-   Client ID (it ends in `.access`) in `[access] service_tokens`. Its Client ID and Client Secret
-   go into the phone app's settings and nowhere else.
+   Client ID (it ends in `.access`) as the `token` of the `phone` `[[caller]]` in `relay.toml`
+   (or, with no callers or profiles, in `[access] service_tokens`). Its Client ID and Client
+   Secret go into the phone app's settings and nowhere else.
 3. **A second service token, for the relay itself.** This is what the relay shows your MCP
-   servers. It is not a caller of the relay: never add it to the relay's own Access policy or to
-   `[access] service_tokens`. In `.env`:
+   servers. It is not a caller of the relay: never add it to the relay's own Access policy, to a
+   `[[caller]]`, or to `[access] service_tokens`. In `.env`:
 
    ```sh
    CF_ACCESS_CLIENT_ID=<the relay token's Client ID>
@@ -326,6 +354,44 @@ conversations, held calls and the lockout, which is by design.
 
 If something is wrong, `docker compose logs relay` has one line per turn and one per refusal.
 Refusals name the reason (no assertion, an unlisted token, a bad audience) and never the token.
+
+## Adding a Home Assistant speaker
+
+The relay side of a speaker at home: a token of its own, and the profiles it may use. These steps
+need your Cloudflare account and your host, so they are yours. The token's secret goes into Home
+Assistant's integration settings and nowhere else; never into a file in this repository.
+
+1. **A service token for Home Assistant.** In Cloudflare Zero Trust, create a new service token
+   (say "relay home-assistant") and add it to the relay's Access application policy, the one with
+   action *Service Auth* from step 1 of "Deploying". Keep the Client Secret in your password
+   manager until step 6.
+2. **Its caller and the profiles.** `vim relay.toml` on the host and copy the `[[caller]]` and
+   `[[profile]]` tables from `relay.example.toml`:
+   - the `phone` caller's `token` is the phone token's Client ID (move it out of
+     `[access] service_tokens` and delete that line: one or the other, not both);
+   - the `home-assistant` caller's `token` is the new token's Client ID, with
+     `profiles = ["office", "shared"]`;
+   - keep `gated = "refuse"` on `office` until Home Assistant is known to keep the passphrase out
+     of its chat log and pipeline debug history;
+   - check that `shared`'s `servers` and `allow_services` are what anyone in that room may do.
+3. **Check it.** `docker compose run --rm relay check-config` prints `ok:` or the key to fix.
+4. **Deploy.** `git pull`, build the image again as in "Deploying", then `docker compose up -d`.
+5. **Smoke test as Home Assistant.** From any machine, with the **Home Assistant** token typed
+   unseen as in step 9 of "Deploying":
+
+   ```sh
+   export RELAY_URL=https://relay.example.com
+   stty -echo; read -r CF_ACCESS_CLIENT_ID; read -r CF_ACCESS_CLIENT_SECRET; stty echo
+   export CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+   sh scripts/smoke.sh --profile shared
+   sh scripts/smoke.sh --profile office
+   ```
+
+   Both print `All checks passed.` Then, as a check that the token cannot claim more,
+   `sh scripts/smoke.sh --profile personal` must fail with `HTTP 403`. Close that shell
+   afterwards.
+6. **Hand the token to Home Assistant.** Its Client ID and Client Secret go into the
+   `hey-claude-ha` integration's setup, with the relay's URL, and nowhere else.
 
 ## Development
 
