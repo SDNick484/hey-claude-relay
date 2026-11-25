@@ -257,6 +257,21 @@ def _service_permitted(server: ServerConfig, pattern: str) -> bool:
     )
 
 
+def _tool_permitted(server: ServerConfig, pattern: str) -> bool:
+    """Whether a profile's tool pattern could ever match a tool ``server`` offers.
+
+    Overlap either way round counts, as for a gate: the tools themselves are only known at run
+    time, where the profile's list and the server's are both applied anyway.
+    """
+
+    def overlaps(glob: str) -> bool:
+        return fnmatch.fnmatchcase(pattern, glob) or fnmatch.fnmatchcase(glob, pattern)
+
+    if any(fnmatch.fnmatchcase(pattern, denied) for denied in server.deny):
+        return False
+    return not server.tools or any(overlaps(offered) for offered in server.tools)
+
+
 class RelayConfig(_Model):
     model: str = Field(default="claude-sonnet-5-5", min_length=1)
     # "none" sends no effort at all, for a model that has no such setting.
@@ -354,6 +369,11 @@ class RelayConfig(_Model):
                     )
                 if server_part not in {server.name for server in mine}:
                     raise ValueError(f"{where}: tools names server {server_part!r}, which this profile does not use")
+                if not _tool_permitted(servers[server_part], tool_part):
+                    raise ValueError(
+                        f"{where}: tools names {pattern!r}, which the server sections do not offer; "
+                        "a profile can only narrow them"
+                    )
             if not profile.allow_services:
                 continue
             readers = [server for server in mine if server.service_from]

@@ -160,6 +160,12 @@ BAD = [
         with_profile('servers = ["house"]\ntools = ["matinee.search"]'),
         "tools",
     ),
+    ("a tool the server's tools list does not offer", with_profile('tools = ["house.ha_restart"]'), "tools"),
+    (
+        "a tool the server denies",
+        with_profile('tools = ["matinee.admin_reset"]', MATINEE + 'deny = ["admin_*"]\n' + HOUSE_POLICY),
+        "tools",
+    ),
     ("a glob for the server part of a tool", with_profile('tools = ["*.search"]'), "tools"),
     ("a tool with no server part", with_profile('tools = ["search"]'), "tools"),
     (
