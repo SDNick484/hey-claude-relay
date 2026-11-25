@@ -21,9 +21,8 @@ pytestmark = pytest.mark.skipif(shutil.which("curl") is None, reason="needs curl
 SCRIPT = ["sh", "scripts/smoke.sh"]
 
 
-@pytest.fixture
-def local_relay_url():
-    cfg, secrets = load_toml("")
+def _serve(toml: str):
+    cfg, secrets = load_toml(toml)
     claude = FakeClaude(say("Smoke test heard."), say("Still here."))
     server = uvicorn.Server(
         uvicorn.Config(create_app(cfg, secrets, claude=claude), host="127.0.0.1", port=0, log_config=None)
@@ -40,8 +39,24 @@ def local_relay_url():
     thread.join(timeout=10)
 
 
+@pytest.fixture
+def local_relay_url():
+    yield from _serve("")
+
+
+@pytest.fixture
+def local_profile_relay_url():
+    yield from _serve('[[profile]]\nname = "home"\n\n[[profile]]\nname = "shared"\n')
+
+
 def run(env):
-    return subprocess.run(SCRIPT, env={"PATH": os.environ["PATH"], **env}, capture_output=True, text=True, timeout=60)
+    return run_args([], env)
+
+
+def run_args(args, env):
+    return subprocess.run(
+        SCRIPT + list(args), env={"PATH": os.environ["PATH"], **env}, capture_output=True, text=True, timeout=60
+    )
 
 
 def test_smoke_script_passes_against_a_local_relay(local_relay_url):
@@ -104,3 +119,21 @@ def test_a_secret_curl_could_not_carry_whole_is_refused(local_relay_url, secret)
 def test_the_script_cleans_up_when_interrupted():
     text = Path("scripts/smoke.sh").read_text()
     assert "trap 'exit 130' INT TERM HUP" in text  # dash and ash do not run the EXIT trap on a signal otherwise
+
+
+def test_profile_option_is_sent(local_profile_relay_url):
+    out = run_args(["--profile", "shared"], {"RELAY_URL": local_profile_relay_url, "RELAY_SMOKE_LOCAL": "1"})
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert [line.split()[0] for line in out.stdout.splitlines()] == ["ok"] * 7 + ["All"], out.stdout
+
+
+def test_a_profile_the_relay_does_not_have_fails(local_relay_url):
+    out = run_args(["--profile", "office"], {"RELAY_URL": local_relay_url, "RELAY_SMOKE_LOCAL": "1"})
+    assert out.returncode != 0 and "HTTP 403" in out.stderr, out.stdout + out.stderr
+
+
+@pytest.mark.parametrize("args", [["--profile"], ["--profile", 'x"y'], ["--profile", "Office"], ["--bogus"]])
+def test_bad_arguments_are_usage_errors(args):
+    out = run_args(args, {"RELAY_URL": "http://127.0.0.1:9"})
+    assert out.returncode == 2 and "usage" in out.stderr.lower(), out.stdout + out.stderr
+    assert "ok" not in out.stdout
