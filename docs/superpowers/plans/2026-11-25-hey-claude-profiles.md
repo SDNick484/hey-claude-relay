@@ -58,6 +58,7 @@ def test_callers_and_profiles_load(tmp_path):  # two callers, three profiles as 
     assert cfg.profile[2].servers == ("house",) and cfg.profile[2].gated == "refuse"
     assert "speaker.access" not in repr(cfg)
 
+
 @pytest.mark.parametrize("text, key", [...])
 def test_a_bad_caller_or_profile_stops_startup(tmp_path, text, key): ...
 ```
@@ -80,9 +81,16 @@ Parametrized cases, each asserting `ConfigError` whose message contains the key 
 def test_narrowing_patterns_are_accepted(tmp_path):
     # light.* under light.*, light.kitchen_on under light.*, cover.close_cover verbatim
     ...
+
+
 def test_no_callers_and_no_profiles_is_todays_config(tmp_path):
-    cfg, _ = load(tmp_path, '[access]\nteam_domain = "example.cloudflareaccess.com"\naudiences = ["a"]\nservice_tokens = ["a.access"]\n')
+    cfg, _ = load(
+        tmp_path,
+        '[access]\nteam_domain = "example.cloudflareaccess.com"\naudiences = ["a"]\nservice_tokens = ["a.access"]\n',
+    )
     assert cfg.caller == () and cfg.profile == ()
+
+
 def test_gated_may_be_left_out_when_there_are_no_gates(tmp_path): ...
 def test_profile_prompt_file_is_relative_to_the_config(tmp_path): ...
 def test_local_relay_may_have_profiles_without_callers(tmp_path): ...  # no [access], two [[profile]]
@@ -131,8 +139,15 @@ Rules: no `[access]` → one caller `local` (identity `"local"`), profiles = all
 def test_no_callers_no_profiles_is_one_caller_with_everything():
     r = Roster(RelayConfig())
     c = r.caller("local")
-    assert c.name == "local" and r.choose(c, None) is EVERYTHING and r.choose(c, "-") is None and r.choose(c, "office") is None
-def test_service_tokens_are_one_caller(): ...       # caller("a.access").name == caller("b.access").name == "default"
+    assert (
+        c.name == "local"
+        and r.choose(c, None) is EVERYTHING
+        and r.choose(c, "-") is None
+        and r.choose(c, "office") is None
+    )
+
+
+def test_service_tokens_are_one_caller(): ...  # caller("a.access").name == caller("b.access").name == "default"
 def test_a_caller_gets_its_own_profiles_first_is_default(): ...  # speaker: choose(None).name == "office"; "shared" ok; "personal" None
 def test_an_unknown_token_is_no_caller(): ...
 def test_local_may_use_every_profile(): ...
@@ -168,15 +183,21 @@ Order inside `decide`, profile checks added around today's: server not in profil
 
 ```python
 SHARED = ProfileConfig(name="shared", servers=("house",), gated="refuse", allow_services=("light.*",))
+
+
 def test_a_profile_refuses_a_service_the_server_allows():
     assert isinstance(P.decide(call(domain="cover", service="close_cover"), SHARED), Refuse)
     assert P.decide(call(domain="light", service="turn_on"), SHARED) == Allow()
-def test_a_profile_never_widens(): ...      # lock.unlock refused even with allow_services=("*",) on a constructed profile
+
+
+def test_a_profile_never_widens(): ...  # lock.unlock refused even with allow_services=("*",) on a constructed profile
 def test_a_server_outside_the_profile_is_refused(): ...
 def test_a_tool_outside_the_profile_tools_is_refused(): ...
 def test_gated_refuse_refuses_without_holding():
     d = P.decide(call(domain="cover", service="open_cover"), ProfileConfig(name="guest", gated="refuse"))
     assert d == Refuse(NO_PROMPT_HERE.format(what="cover.open_cover"))
+
+
 def test_gated_allow_holds_as_today(): ...
 def test_one_argument_decide_is_everything(): ...
 ```
@@ -290,9 +311,13 @@ async def test_a_profile_prompt_file_is_used(): ...  # files={"shared.md": "Shar
 def test_profile_option_is_sent(local_profile_relay_url):
     out = run_args(["--profile", "shared"], {"RELAY_URL": local_profile_relay_url, "RELAY_SMOKE_LOCAL": "1"})
     assert out.returncode == 0, out.stdout + out.stderr
+
+
 def test_a_profile_the_relay_does_not_have_fails(local_relay_url):
     out = run_args(["--profile", "office"], {...})
     assert out.returncode != 0 and "HTTP 403" in out.stderr
+
+
 @pytest.mark.parametrize("args", [["--profile"], ["--profile", 'x"y'], ["--bogus"]])
 def test_bad_arguments_are_usage_errors(args): ...  # returncode 2, "usage" in stderr
 ```

@@ -71,11 +71,14 @@ Names = Annotated[tuple[Name, ...], Field(min_length=1)]
 
 
 class AccessConfig(_Model):
-    """Which Cloudflare Access application guards the relay, and which service tokens may call it."""
+    """Which Cloudflare Access application guards the relay, and which service tokens may call it.
+
+    The tokens are listed here, or each in a ``[[caller]]`` table, never both: see RelayConfig.
+    """
 
     team_domain: str
     audiences: Names
-    service_tokens: Names
+    service_tokens: tuple[Name, ...] = ()
 
     @field_validator("team_domain")
     @classmethod
@@ -212,6 +215,48 @@ class GateSettings(_Model):
     lockout_minutes: float = Field(default=15, gt=0, allow_inf_nan=False)
 
 
+# A caller's or a profile's name: it goes into the log line, so plain and short.
+_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,31}$"
+_GLOB_CHARACTERS = frozenset("*?[")
+
+
+class CallerConfig(_Model):
+    """One service token allowed to call the relay, and the profiles it may choose from."""
+
+    name: str = Field(pattern=_NAME_PATTERN)
+    # The token's Client ID, as Access puts it in the assertion's common_name. Not for logs.
+    token: Name = Field(repr=False)
+    profiles: tuple[Name, ...] = ()  # the first is the default; empty only when there are no profiles
+
+
+class ProfileConfig(_Model):
+    """A named rule set a caller may choose. It only ever narrows what the server sections allow."""
+
+    name: str = Field(pattern=_NAME_PATTERN)
+    servers: tuple[str, ...] | None = None  # None: every server
+    tools: tuple[str, ...] | None = None  # "server.tool" globs; None: every tool the servers offer
+    allow_services: tuple[str, ...] = ()  # globs; when set, a service must match these as well as the server's
+    # What a call matching a [[gate]] does: "allow" holds it for its checks, as without profiles;
+    # "refuse" refuses it outright, with no passphrase prompt. Required once any gate exists.
+    gated: Literal["allow", "refuse"] | None = None
+    prompt_file: Path | None = None  # unset: the relay's own prompt_file, or the one that ships
+
+
+def _service_permitted(server: ServerConfig, pattern: str) -> bool:
+    """Whether a profile's service pattern stays inside what ``server`` allows.
+
+    The pattern's text is matched as if it were a service name against the server's globs. That
+    is stricter than glob containment needs to be, on purpose: it is a check for mistakes at
+    startup, and the relay enforces both lists on every call anyway.
+    """
+    wanted = pattern.strip().casefold()
+    if any(fnmatch.fnmatchcase(wanted, denied.strip().casefold()) for denied in server.deny_services):
+        return False
+    return not server.allow_services or any(
+        fnmatch.fnmatchcase(wanted, allowed.strip().casefold()) for allowed in server.allow_services
+    )
+
+
 class RelayConfig(_Model):
     model: str = Field(default="claude-sonnet-5-5", min_length=1)
     # "none" sends no effort at all, for a model that has no such setting.
@@ -240,6 +285,89 @@ class RelayConfig(_Model):
     gate: tuple[GateConfig, ...] = ()
     near_home: NearHomeConfig | None = None
     gates: GateSettings = GateSettings()
+    caller: tuple[CallerConfig, ...] = ()
+    profile: tuple[ProfileConfig, ...] = ()
+
+    @model_validator(mode="after")
+    def _callers_are_admitted_one_way(self) -> RelayConfig:
+        if self.access is None:
+            if self.caller:
+                raise ValueError("caller: a [[caller]] is a service token, which needs an [access] table")
+            return self
+        if self.caller and self.access.service_tokens:
+            raise ValueError(
+                "access.service_tokens: list the tokens there or in [[caller]] tables, not both; "
+                "move each into a [[caller]]"
+            )
+        if not self.caller and not self.access.service_tokens:
+            raise ValueError(
+                "access.service_tokens: no service token may call the relay; list one, or add a [[caller]]"
+            )
+        if self.profile and not self.caller:
+            raise ValueError("caller: [[profile]] tables need [[caller]] tables saying which token may use which")
+        names: set[str] = set()
+        tokens: set[str] = set()
+        for caller in self.caller:
+            if caller.name in names:
+                raise ValueError(f"caller name {caller.name!r} is used twice")
+            if caller.token in tokens:
+                raise ValueError(f"caller {caller.name!r}: its token is already another caller's")  # never the value
+            names.add(caller.name)
+            tokens.add(caller.token)
+        return self
+
+    @model_validator(mode="after")
+    def _callers_name_profiles(self) -> RelayConfig:
+        known = {profile.name for profile in self.profile}
+        if len(known) != len(self.profile):
+            raise ValueError("profile: two [[profile]] tables have the same name")
+        for caller in self.caller:
+            if not self.profile:
+                if caller.profiles:
+                    raise ValueError(f"caller {caller.name!r}: profiles names profiles, but there is no [[profile]]")
+                continue
+            if not caller.profiles:
+                raise ValueError(f"caller {caller.name!r}: profiles must name at least one [[profile]]")
+            if len(set(caller.profiles)) != len(caller.profiles):
+                raise ValueError(f"caller {caller.name!r}: profiles names a profile twice")
+            for name in caller.profiles:
+                if name not in known:
+                    raise ValueError(f"caller {caller.name!r}: profiles names {name!r}, which is not a [[profile]]")
+        return self
+
+    @model_validator(mode="after")
+    def _profiles_only_narrow(self) -> RelayConfig:
+        servers = {server.name: server for server in self.server}
+        for profile in self.profile:
+            where = f"profile {profile.name!r}"
+            if self.gate and profile.gated is None:
+                raise ValueError(f'{where}: gated must say "allow" or "refuse", because a [[gate]] is configured')
+            for name in profile.servers or ():
+                if name not in servers:
+                    raise ValueError(f"{where}: servers names {name!r}, which is not a configured [[server]]")
+            mine = [servers[name] for name in profile.servers] if profile.servers is not None else list(self.server)
+            for pattern in profile.tools or ():
+                server_part, dot, tool_part = pattern.partition(".")
+                if not dot or not tool_part or _GLOB_CHARACTERS & set(server_part):
+                    raise ValueError(
+                        f'{where}: tools entry {pattern!r} must be "server.tool", the server named plainly'
+                    )
+                if server_part not in {server.name for server in mine}:
+                    raise ValueError(f"{where}: tools names server {server_part!r}, which this profile does not use")
+            if not profile.allow_services:
+                continue
+            readers = [server for server in mine if server.service_from]
+            if not readers:
+                raise ValueError(
+                    f"{where}: allow_services needs a server with service_from among the profile's servers"
+                )
+            for pattern in profile.allow_services:
+                if not any(_service_permitted(server, pattern) for server in readers):
+                    raise ValueError(
+                        f"{where}: allow_services names {pattern!r}, which the server sections do not allow; "
+                        "a profile can only narrow them"
+                    )
+        return self
 
     @model_validator(mode="after")
     def _near_home_can_be_checked(self) -> RelayConfig:
@@ -344,6 +472,14 @@ def load_config(path: Path, env: Mapping[str, str]) -> tuple[RelayConfig, Secret
         raise ConfigError(f"{path}: {_explain(exc)}") from None
     if cfg.prompt_file is not None and not cfg.prompt_file.is_absolute():
         cfg = cfg.model_copy(update={"prompt_file": path.parent / cfg.prompt_file})
+    if any(p.prompt_file is not None and not p.prompt_file.is_absolute() for p in cfg.profile):
+        profiles = tuple(
+            p.model_copy(update={"prompt_file": path.parent / p.prompt_file})
+            if p.prompt_file is not None and not p.prompt_file.is_absolute()
+            else p
+            for p in cfg.profile
+        )
+        cfg = cfg.model_copy(update={"profile": profiles})
     passphrase_hash = _env(env, "RELAY_PASSPHRASE_HASH")
     if any("passphrase" in gate.require for gate in cfg.gate):
         from .gates import check_passphrase_hash  # here, not at the top: gates imports this module
@@ -383,12 +519,17 @@ def load_config(path: Path, env: Mapping[str, str]) -> tuple[RelayConfig, Secret
 
 def prompt_text(cfg: RelayConfig) -> str:
     """The voice instructions: ``cfg.prompt_file`` if set, else the prompt that ships with the relay."""
-    if cfg.prompt_file is None:
+    return prompt_text_at(cfg.prompt_file)
+
+
+def prompt_text_at(path: Path | None) -> str:
+    """The voice instructions in ``path``, or the prompt that ships with the relay when it is None."""
+    if path is None:
         return resources.files(__package__).joinpath("prompts", "voice.md").read_text(encoding="utf-8").strip()
     try:
-        text = cfg.prompt_file.read_text(encoding="utf-8").strip()
+        text = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
-        raise ConfigError(f"prompt_file {cfg.prompt_file}: cannot be read ({exc.strerror}).") from exc
+        raise ConfigError(f"prompt_file {path}: cannot be read ({exc.strerror}).") from exc
     if not text:
-        raise ConfigError(f"prompt_file {cfg.prompt_file}: is empty.")
+        raise ConfigError(f"prompt_file {path}: is empty.")
     return text
