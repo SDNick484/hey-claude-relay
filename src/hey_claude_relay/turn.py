@@ -184,13 +184,22 @@ class TurnRunner:
         # The clock starts here, so asking the servers for their tools (a new conversation) and
         # waiting behind another turn both come out of this turn's time, not on top of it.
         deadline = anyio.current_time() + self.cfg.turn_seconds
-        conversation = self.store.get(conversation_id, owner=caller)
-        if conversation is not None and (conversation.profile or EVERYTHING).name != profile.name:
-            conversation = None  # a conversation keeps the profile it started with; the old one is left to expire
-        conversation = conversation or await self._start(caller, profile)
+        existing = self.store.get(conversation_id, owner=caller)
+        if existing is not None:
+            async with existing.lock:
+                # A held call comes first, whatever profile this turn names: the message after
+                # "Say your passphrase." is the attempt and goes nowhere else. It is settled under
+                # the profile the call was held under, which this same caller started it with.
+                if existing.pending is not None:
+                    return await self._resume(existing, existing.pending, text, deadline)
+                if (existing.profile or EVERYTHING).name == profile.name:
+                    if secret:
+                        return TurnResult(existing.id, LOST, False, (), "secret_lost", 0)
+                    return await self._converse(existing, text, deadline)
+            # Another profile: a conversation keeps the one it started with, so this turn starts
+            # a new one. The old one is left to expire.
+        conversation = await self._start(caller, profile)
         async with conversation.lock:
-            if conversation.pending is not None:
-                return await self._resume(conversation, conversation.pending, text, deadline)
             if secret:
                 return TurnResult(conversation.id, LOST, False, (), "secret_lost", 0)
             return await self._converse(conversation, text, deadline)

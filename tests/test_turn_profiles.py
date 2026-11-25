@@ -5,6 +5,8 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
+import pytest
+
 from conftest import PHRASE, ROOMS, SPEAKER, as_caller, assert_valid_history, gated, make_relay
 from fakes import say, use
 from hey_claude_relay.errors import LOST
@@ -208,3 +210,17 @@ async def test_a_profile_prompt_file_is_used():
         await r.turn("hello", token=SPEAKER, profile="office")
     assert r.claude.calls[0]["system"].startswith("Shared room.")
     assert not r.claude.calls[1]["system"].startswith("Shared room.")
+
+
+@pytest.mark.parametrize("flagged", [False, True])
+async def test_the_message_after_the_prompt_is_the_attempt_whatever_profile_it_names(flagged, caplog):
+    caplog.set_level(logging.DEBUG)
+    async with rooms(ASK_OPEN, say("Opening.")) as (r, house, matinee):
+        held = (await r.turn("open the garage", token=SPEAKER, profile="office")).json()
+        cid = held["conversation_id"]
+        answer = await r.turn(PHRASE, conversation_id=cid, token=SPEAKER, profile="shared", secret=flagged)
+        assert_valid_history(r.app.state.conversations.get(cid).messages)
+    assert answer.json()["conversation_id"] == cid and answer.json()["reply"] == "Opening."
+    assert house.service_calls == [("cover", "open_cover")]  # settled under the profile it was held under
+    for needle in (PHRASE, "sesame"):
+        assert needle not in r.claude.sent() and needle not in caplog.text
