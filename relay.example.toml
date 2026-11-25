@@ -15,12 +15,60 @@ idle_minutes = 15             # a conversation is forgotten after this long with
 # starts, so an edit needs no restart.
 # prompt_file = "voice.md"
 
-# The Cloudflare Access application in front of the relay, and the service tokens allowed to
-# call it. With no [access] table the relay serves this machine only.
+# The Cloudflare Access application in front of the relay. With no [access] table the relay
+# serves this machine only.
 [access]
 team_domain = "example.cloudflareaccess.com"
 audiences = ["replace-with-the-access-application-aud-tag"]
-service_tokens = ["replace-with-the-phone-token-client-id.access"]
+# The service tokens allowed to call the relay are the [[caller]] tables below. A relay with one
+# kind of caller can list them here instead, with no [[caller]] or [[profile]] tables:
+#   service_tokens = ["replace-with-the-phone-token-client-id.access"]
+# One way or the other, not both.
+
+# --- Callers and profiles ----------------------------------------------------------------
+# A [[caller]] is one Access service token (its Client ID, which ends in .access) and the
+# profiles it may use. The first is its default. A request may ask for another of them with
+# "profile"; one the token is not allowed gets a 403, whatever the request says.
+#
+# A [[profile]] is a set of rules for a place. It can only take away from what the [[server]]
+# sections allow, never add: a profile naming a server, a tool or a service they do not
+# allow stops startup.
+#
+#   servers = [...]          only these servers; leave out for all of them
+#   tools = [...]            only these tools, as "server.tool" globs; leave out for all
+#   allow_services = [...]   a service must match these as well as its server's own list
+#   gated = "allow"          a call matching a [[gate]] is held for its checks, as on the phone
+#   gated = "refuse"         it is refused outright, and nobody is asked for the passphrase
+#   prompt_file = "..."      voice instructions for this profile, beside relay.toml
+#
+# gated is required on every profile once a [[gate]] exists.
+
+[[caller]]
+name = "phone"
+token = "replace-with-the-phone-token-client-id.access"
+profiles = ["personal"]
+
+[[caller]]
+name = "home-assistant"
+token = "replace-with-the-home-assistant-token-client-id.access"
+profiles = ["office", "shared"]                # the speaker picks one per room
+
+[[profile]]
+name = "personal"                              # everything the servers allow
+gated = "allow"
+
+[[profile]]
+name = "office"
+# "allow" only once you know Home Assistant keeps the passphrase out of its chat log and
+# pipeline debug history. Until then, refuse: the garage stays a phone and car action.
+gated = "refuse"
+
+[[profile]]
+name = "shared"                                # a room anyone may use
+servers = ["cookbooks", "matinee", "home-assistant"]
+gated = "refuse"
+allow_services = ["light.*", "fan.*", "media_player.*"]
+# prompt_file = "voice-shared.md"
 
 # --- MCP servers -------------------------------------------------------------------------
 # Each [[server]] is one MCP server the relay may use. Its tools reach Claude under the

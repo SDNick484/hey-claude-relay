@@ -4,6 +4,7 @@ import anyio
 import pytest
 
 from fakes import THINKING
+from hey_claude_relay.config import ProfileConfig
 from hey_claude_relay.conversations import ConversationStore, Stored, TurnLedger
 
 
@@ -215,3 +216,27 @@ async def test_a_crash_reaches_every_waiter_and_is_not_stored(ledger):
         return Stored(200, {"reply": "recovered"})
 
     assert (await ledger.run_once("t1", fine)).body == {"reply": "recovered"}
+
+
+def test_start_records_caller_and_profile(store):
+    office = ProfileConfig(name="office", gated="allow")
+    conversation = store.start("sys", [], caller="speaker", profile=office)
+    assert (conversation.caller, conversation.profile) == ("speaker", office)
+    assert (store.start("sys", []).caller, store.start("sys", []).profile) == ("", None)
+
+
+def test_get_with_an_owner_hides_other_callers(store, clock):
+    mine = store.start("sys", [], caller="phone")
+    clock.advance(60)
+    assert store.get(mine.id, owner="speaker") is None
+    assert mine.last_used == 1000.0  # someone else asking for it does not keep it alive
+    assert store.get(mine.id, owner="phone") is mine and mine.last_used == 1060.0
+    assert store.get(mine.id) is mine  # no owner given: as before
+
+
+def test_end_with_an_owner_leaves_other_callers_alone(store):
+    mine = store.start("sys", [], caller="phone")
+    store.end(mine.id, owner="speaker")
+    assert store.get(mine.id) is mine
+    store.end(mine.id, owner="phone")
+    assert store.get(mine.id) is None

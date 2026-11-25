@@ -4,7 +4,7 @@ import jwt
 import pytest
 
 from hey_claude_relay.access import AccessDenied, AccessPolicy, AccessVerifier
-from hey_claude_relay.config import AccessConfig
+from hey_claude_relay.config import AccessConfig, CallerConfig
 from keys import AUD, CALLER, OTHER_KEY, PRIVATE_KEY, TEAM, mint, resolver
 
 POLICY = AccessPolicy(TEAM, (AUD,), frozenset({CALLER}))
@@ -90,6 +90,12 @@ def test_policy_urls_and_repr():
 def test_policy_from_config():
     cfg = AccessConfig(team_domain=TEAM, audiences=("aud-1", "aud-2"), service_tokens=("a.access", "b.access"))
     assert AccessPolicy.from_config(cfg) == AccessPolicy(TEAM, ("aud-1", "aud-2"), frozenset({"a.access", "b.access"}))
+
+
+def test_policy_admits_caller_tokens_too():
+    cfg = AccessConfig(team_domain=TEAM, audiences=("aud-1",))
+    callers = (CallerConfig(name="phone", token="phone.access"), CallerConfig(name="speaker", token="speaker.access"))
+    assert AccessPolicy.from_config(cfg, callers).service_tokens == frozenset({"phone.access", "speaker.access"})
 
 
 async def test_unknown_key_id_refetches_at_most_once_a_minute(monkeypatch):

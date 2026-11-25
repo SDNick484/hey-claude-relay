@@ -13,10 +13,12 @@ import pytest
 from starlette.applications import Starlette
 
 from fakes import FakeClaude
+from hey_claude_relay.access import AccessPolicy, AccessVerifier
 from hey_claude_relay.app import create_app
 from hey_claude_relay.config import RelayConfig, Secrets, load_config
 from hey_claude_relay.gates import hash_passphrase
 from hey_claude_relay.mcp_client import McpServers
+from keys import AUD, CALLER, TEAM, mint, resolver
 from stubs import Stub, house_stub, transport_for
 
 # Placeholder values for every environment variable relay.example.toml needs. It grows with the example.
@@ -102,6 +104,50 @@ auth = "none"
 """
 )
 
+# Rooms: the relay behind Access, two callers, four profiles, a matinee and the gated house.
+SPEAKER = "speaker.access"  # the second caller's token, beside keys.CALLER (the phone's)
+ROOMS = (
+    f"""
+[access]
+team_domain = "{TEAM}"
+audiences = ["{AUD}"]
+
+[[caller]]
+name = "phone"
+token = "{CALLER}"
+profiles = ["personal"]
+
+[[caller]]
+name = "speaker"
+token = "{SPEAKER}"
+profiles = ["office", "shared", "guest"]
+
+[[profile]]
+name = "personal"
+gated = "allow"
+
+[[profile]]
+name = "office"
+gated = "allow"
+
+[[profile]]
+name = "shared"
+servers = ["house"]
+gated = "refuse"
+allow_services = ["light.*"]
+
+[[profile]]
+name = "guest"
+gated = "refuse"
+
+[[server]]
+name = "matinee"
+url = "http://127.0.0.1:9001/mcp"
+auth = "none"
+"""
+    + GATED
+)
+
 
 @pytest.fixture
 def anyio_backend():
@@ -183,14 +229,29 @@ class Relay:
     stubs: dict[str, Any] = field(default_factory=dict)
 
     async def turn(
-        self, text: str, *, conversation_id: str | None = None, turn_id: str | None = None, secret: bool = False
+        self,
+        text: str,
+        *,
+        conversation_id: str | None = None,
+        turn_id: str | None = None,
+        secret: bool = False,
+        profile: str | None = None,
+        token: str | None = None,
     ) -> httpx2.Response:
+        """One turn. ``profile`` is sent when given; ``token`` sends an Access assertion for that client ID."""
         body: dict[str, Any] = {"turn_id": turn_id or str(uuid.uuid4()), "text": text, "client": "test"}
         if conversation_id is not None:
             body["conversation_id"] = conversation_id
         if secret:
             body["secret"] = True
-        return await self.http.post("/v1/turn", json=body)
+        if profile is not None:
+            body["profile"] = profile
+        return await self.http.post("/v1/turn", json=body, headers=as_caller(token))
+
+
+def as_caller(token: str | None) -> dict[str, str]:
+    """The header Access adds for a service token with this client ID, or none."""
+    return {"Cf-Access-Jwt-Assertion": mint(common_name=token)} if token is not None else {}
 
 
 def assert_valid_history(messages: list[dict[str, Any]]) -> None:
@@ -217,11 +278,13 @@ async def make_relay(
     stubs: Sequence[Stub] = (),
     env: Mapping[str, str] | None = None,
     files: Mapping[str, str] | None = None,
+    access: bool = False,
 ) -> AsyncIterator[Relay]:
     """A relay built from ``toml`` (a whole relay.toml) with a scripted Claude. No [access]: loopback only.
 
     ``stubs`` stand in for the MCP servers the toml names. ``files`` are written beside relay.toml
-    first, for a test that names its own prompt file.
+    first, for a test that names its own prompt file. ``access`` checks assertions with the test
+    key (keys.py) against the toml's [access] table and [[caller]] tokens.
     """
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)
@@ -230,7 +293,13 @@ async def make_relay(
         (folder / "relay.toml").write_text(toml)
         cfg, secrets = load_config(folder / "relay.toml", {**TEST_ENV, **(env or {})})
         claude, clock = FakeClaude(*script), FakeClock()
-        app = create_app(cfg, secrets, claude=claude, clock=clock, transport_for=transport_for(*stubs))
+        verifier = None
+        if access:
+            assert cfg.access is not None, "access=True needs an [access] table in the toml"
+            verifier = AccessVerifier(AccessPolicy.from_config(cfg.access, cfg.caller), resolver)
+        app = create_app(
+            cfg, secrets, claude=claude, clock=clock, transport_for=transport_for(*stubs), verifier=verifier
+        )
         async with client_for(app) as http:
             yield Relay(
                 http=http, claude=claude, clock=clock, app=app, dir=folder, stubs={stub.name: stub for stub in stubs}
@@ -239,10 +308,20 @@ async def make_relay(
 
 @asynccontextmanager
 async def gated(
-    *script: Any, state: str = "home", search: Any = None, toml: str = GATED, env: Mapping[str, str] | None = None
+    *script: Any,
+    state: str = "home",
+    search: Any = None,
+    toml: str = GATED,
+    env: Mapping[str, str] | None = None,
+    stubs: Sequence[Stub] = (),
+    access: bool = False,
+    files: Mapping[str, str] | None = None,
 ) -> AsyncIterator[tuple[Relay, Stub]]:
-    """A relay with the garage gate in force and a house to act on: yields (relay, house)."""
+    """A relay with the garage gate in force and a house to act on: yields (relay, house).
+
+    ``stubs`` are more servers beside the house; ``access`` and ``files`` go to make_relay.
+    """
     async with house_stub(state, search=search) as house:
         hashed = {"RELAY_PASSPHRASE_HASH": PHRASE_HASH, **(env or {})}
-        async with make_relay(toml, *script, stubs=[house], env=hashed) as relay:
+        async with make_relay(toml, *script, stubs=[house, *stubs], env=hashed, access=access, files=files) as relay:
             yield relay, house

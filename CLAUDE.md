@@ -64,7 +64,9 @@ with `relay.example.toml` and checks `/healthz`.
   the crash guard
 - `src/hey_claude_relay/turn.py`: `TurnRunner`, one turn from text to spoken reply: the tool loop and its limits
 - `src/hey_claude_relay/mcp_client.py`: the MCP side: auth headers, the tool catalog, per-turn connections
-- `src/hey_claude_relay/policy.py`: `Policy.decide`: allow, refuse or hold each tool call (services, gates)
+- `src/hey_claude_relay/policy.py`: `Policy.decide`: allow, refuse or hold each tool call (services, gates,
+  the turn's profile)
+- `src/hey_claude_relay/profiles.py`: `Roster`: the caller a verified token is, and the profile a turn may use
 - `src/hey_claude_relay/gates.py`: passphrase normalising and hashing, the lockout counter, the near-home check
 - `src/hey_claude_relay/claude.py`: the Claude API adapter and its error mapping
 - `src/hey_claude_relay/conversations.py`: conversations in memory, and `turn_id` replay

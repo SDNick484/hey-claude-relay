@@ -3,7 +3,7 @@ import pytest
 
 from conftest import HOUSE, HOUSE_POLICY, PHRASE_HASH, load_toml, servers
 from hey_claude_relay.config import ConfigError, GateSettings, NearHomeConfig
-from hey_claude_relay.gates import GateKeeper, NearHome
+from hey_claude_relay.gates import GateKeeper, Lockouts, NearHome
 from stubs import house_stub, sdk_stub
 
 NEAR = NearHomeConfig(
@@ -176,3 +176,13 @@ def test_near_home_values_that_could_never_match_are_refused(line):
 def test_gate_settings_that_make_no_sense_are_refused(line):
     with pytest.raises(ConfigError, match=line.split(" ")[0]):
         load_toml(HOUSE + "\n[gates]\n" + line + "\n")
+
+
+def test_lockouts_are_per_caller(clock):
+    lockouts = Lockouts(GateSettings(), clock)
+    assert lockouts.of("phone") is lockouts.of("phone")
+    for _ in range(3):
+        lockouts.of("speaker").miss()
+    assert lockouts.of("speaker").locked() and not lockouts.of("phone").locked()
+    clock.advance(15 * 60 + 1)
+    assert not lockouts.of("speaker").locked()

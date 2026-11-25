@@ -4,6 +4,7 @@
 #   export RELAY_URL=https://relay.example.com
 #   export CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET     # set them in your shell first
 #   sh scripts/smoke.sh
+#   sh scripts/smoke.sh --profile shared      # every turn asks for that profile
 #
 # The two Access variables are handed to curl in a private file. They are never echoed and never
 # appear on a command line. RELAY_SMOKE_LOCAL=1 skips the "strangers are refused" check, for a
@@ -11,6 +12,26 @@
 #
 # It sends two real turns, so it costs two small calls to Claude.
 set -eu
+
+usage() {
+    echo "usage: sh scripts/smoke.sh [--profile NAME]   (NAME: lower-case letters, digits and hyphens)" >&2
+    exit 2
+}
+
+extra=''
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --profile)
+            [ $# -ge 2 ] || usage
+            case "$2" in
+                '' | [!a-z0-9]* | *[!a-z0-9-]*) usage ;;
+            esac
+            extra=",\"profile\":\"$2\""
+            shift 2
+            ;;
+        *) usage ;;
+    esac
+done
 
 : "${RELAY_URL:?Set RELAY_URL to where the relay answers, for example https://relay.example.com}"
 base=${RELAY_URL%/}
@@ -87,7 +108,7 @@ if [ "${RELAY_SMOKE_LOCAL:-}" != 1 ]; then
 fi
 
 first=$(new_id first)
-ask="{\"turn_id\":\"$first\",\"text\":\"This is a smoke test. Reply with one short sentence.\",\"client\":\"smoke\"}"
+ask="{\"turn_id\":\"$first\",\"text\":\"This is a smoke test. Reply with one short sentence.\",\"client\":\"smoke\"$extra}"
 call POST /v1/turn "$ask"
 reply=$(field reply)
 conversation=$(field conversation_id)
@@ -98,7 +119,7 @@ cp "$tmp/body" "$tmp/first"
 ok "a turn is answered: $reply"
 
 second=$(new_id second)
-call POST /v1/turn "{\"turn_id\":\"$second\",\"text\":\"And once more.\",\"conversation_id\":\"$conversation\",\"client\":\"smoke\"}"
+call POST /v1/turn "{\"turn_id\":\"$second\",\"text\":\"And once more.\",\"conversation_id\":\"$conversation\",\"client\":\"smoke\"$extra}"
 if [ "$code" != 200 ] || [ "$(field conversation_id)" != "$conversation" ]; then
     fail "a follow-up stays in the same conversation"
 fi
@@ -116,7 +137,7 @@ if [ "$code" != 400 ] || [ -z "$(field spoken)" ]; then
 fi
 ok "an empty turn is a spoken bad request"
 
-call POST /v1/turn "{\"turn_id\":\"$(new_id secret)\",\"text\":\"smoke test, not a passphrase\",\"secret\":true}"
+call POST /v1/turn "{\"turn_id\":\"$(new_id secret)\",\"text\":\"smoke test, not a passphrase\",\"secret\":true$extra}"
 case "$code:$(field reply)" in
     "200:I lost track"*) ok "a turn marked secret is not passed on" ;;
     *) fail "a turn marked secret is not passed on" ;;

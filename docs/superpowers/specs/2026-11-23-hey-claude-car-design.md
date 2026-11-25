@@ -315,3 +315,9 @@ credits used to build it.
   ways listed under "Decisions beyond the spec" in
   `docs/superpowers/plans/2026-11-23-hey-claude-relay.md`. None of them
   touches the API.
+
+2026-11-25, agreed with the owner:
+
+- The contract gained the optional `profile` request field, and `unauthorized` now also covers
+  a profile the caller may not use. See
+  `docs/superpowers/specs/2026-11-24-hey-claude-rooms-design.md` and the README's API section.

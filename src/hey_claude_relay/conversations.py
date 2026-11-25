@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 
 if TYPE_CHECKING:
+    from .config import ProfileConfig
     from .mcp_client import Catalog
     from .policy import ToolCall
 
@@ -59,6 +60,8 @@ class Conversation:
     lock: anyio.Lock = field(default_factory=anyio.Lock, repr=False)
     catalog: Catalog | None = None  # which server and tool each name in ``tools`` stands for
     pending: PendingGate | None = None
+    caller: str = ""  # who started it; no other caller may continue it
+    profile: ProfileConfig | None = None  # the rules it started under, for its whole life
 
 
 def _starts_a_turn(message: dict[str, Any]) -> bool:
@@ -84,22 +87,45 @@ class ConversationStore:
         for key in [k for k, c in self._conversations.items() if now - c.last_used > self.idle_seconds]:
             del self._conversations[key]
 
-    def get(self, conversation_id: str | None) -> Conversation | None:
-        """The conversation, if it exists and has not sat idle too long. Finding it counts as use."""
+    def get(self, conversation_id: str | None, *, owner: str | None = None) -> Conversation | None:
+        """The conversation, if it exists and has not sat idle too long. Finding it counts as use.
+
+        With ``owner``, another caller's conversation is not found, and not touched.
+        """
         self._sweep()
         conversation = self._conversations.get(conversation_id) if conversation_id else None
-        if conversation is not None:
-            conversation.last_used = self._clock()
+        if conversation is None or (owner is not None and conversation.caller != owner):
+            return None
+        conversation.last_used = self._clock()
         return conversation
 
-    def start(self, system: str, tools: list[dict[str, Any]], catalog: Catalog | None = None) -> Conversation:
+    def start(
+        self,
+        system: str,
+        tools: list[dict[str, Any]],
+        catalog: Catalog | None = None,
+        *,
+        caller: str = "",
+        profile: ProfileConfig | None = None,
+    ) -> Conversation:
         self._sweep()
-        conversation = Conversation(secrets.token_urlsafe(16), system, tools, last_used=self._clock(), catalog=catalog)
+        conversation = Conversation(
+            secrets.token_urlsafe(16),
+            system,
+            tools,
+            last_used=self._clock(),
+            catalog=catalog,
+            caller=caller,
+            profile=profile,
+        )
         self._conversations[conversation.id] = conversation
         return conversation
 
-    def end(self, conversation_id: str) -> None:
-        self._conversations.pop(conversation_id, None)
+    def end(self, conversation_id: str, *, owner: str | None = None) -> None:
+        """Forget a conversation. With ``owner``, only if it is that caller's."""
+        conversation = self._conversations.get(conversation_id)
+        if conversation is not None and (owner is None or conversation.caller == owner):
+            del self._conversations[conversation_id]
 
     def trim(self, conversation: Conversation) -> None:
         """Cap the length: past ``max_turns`` turns, keep the newest half.
