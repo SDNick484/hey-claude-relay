@@ -51,6 +51,15 @@ def test_check_config_reads_the_prompt_file_too(tmp_path, capsys):
     assert main(["check-config", "--config", str(cfg)]) == 0
 
 
+def test_check_config_reads_each_profiles_prompt_file(tmp_path, capsys):
+    cfg = tmp_path / "relay.toml"
+    cfg.write_text('[[profile]]\nname = "home"\n\n[[profile]]\nname = "shared"\nprompt_file = "shared.md"\n')
+    assert main(["check-config", "--config", str(cfg)]) == 2
+    assert "shared.md" in capsys.readouterr().err
+    (tmp_path / "shared.md").write_text("Anyone may be listening.\n")
+    assert main(["check-config", "--config", str(cfg)]) == 0
+
+
 def test_check_config_needs_the_api_key(tmp_path, capsys, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     cfg = tmp_path / "relay.toml"
