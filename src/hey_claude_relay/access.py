@@ -34,7 +34,7 @@ import ipaddress
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,7 +43,7 @@ import anyio.to_thread
 import jwt
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .config import AccessConfig, ConfigError
+from .config import AccessConfig, CallerConfig, ConfigError
 from .errors import UNAUTHORIZED, error_response
 
 log = logging.getLogger(__name__)
@@ -90,8 +90,9 @@ class AccessPolicy:
         return f"{self.issuer}/cdn-cgi/access/certs"
 
     @classmethod
-    def from_config(cls, cfg: AccessConfig) -> AccessPolicy:
-        return cls(cfg.team_domain, cfg.audiences, frozenset(cfg.service_tokens))
+    def from_config(cls, cfg: AccessConfig, callers: Sequence[CallerConfig] = ()) -> AccessPolicy:
+        """The policy for ``cfg``, admitting its service tokens and every ``[[caller]]``'s token."""
+        return cls(cfg.team_domain, cfg.audiences, frozenset(cfg.service_tokens) | {c.token for c in callers})
 
 
 KeyResolver = Callable[[str], Awaitable[Any]]
