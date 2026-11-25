@@ -190,6 +190,24 @@ class GateKeeper:
         self._misses = []
 
 
+class Lockouts:
+    """One GateKeeper per caller, so wrong guesses from one place cannot lock another out.
+
+    With no [[caller]] tables there is only one caller, so this is one keeper as before.
+    """
+
+    def __init__(self, settings: GateSettings, clock: Clock = time.monotonic) -> None:
+        self._settings = settings
+        self._clock = clock
+        self._keepers: dict[str, GateKeeper] = {}
+
+    def of(self, caller: str) -> GateKeeper:
+        keeper = self._keepers.get(caller)
+        if keeper is None:
+            keeper = self._keepers[caller] = GateKeeper(self._settings, self._clock)
+        return keeper
+
+
 # --- near home ----------------------------------------------------------------------------
 class NearHome:
     """Asks a server, on the relay's own account, where the owner is. Anything short of a clear
