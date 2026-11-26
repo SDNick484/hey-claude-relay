@@ -53,7 +53,7 @@ and `CF-Access-Client-Secret` headers. Access turns that into a signed
   It is not an error.
 - `profile` is optional. Omitted, the turn runs under the caller's first profile. A profile the
   caller's service token may not use, or one that does not exist, is `403` with code
-  `unauthorized`, and nothing runs. A relay with no profiles configured refuses any named one.
+  `unauthorized`, and nothing runs. A relay with no profiles configured ignores the field.
 - A conversation keeps the profile it started with. A turn that names another profile on an
   existing conversation starts a new one and returns its id.
 - Replay and conversations belong to the caller: another caller's `turn_id` never answers with

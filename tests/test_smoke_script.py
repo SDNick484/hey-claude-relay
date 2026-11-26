@@ -127,8 +127,8 @@ def test_profile_option_is_sent(local_profile_relay_url):
     assert [line.split()[0] for line in out.stdout.splitlines()] == ["ok"] * 7 + ["All"], out.stdout
 
 
-def test_a_profile_the_relay_does_not_have_fails(local_relay_url):
-    out = run_args(["--profile", "office"], {"RELAY_URL": local_relay_url, "RELAY_SMOKE_LOCAL": "1"})
+def test_a_profile_the_relay_does_not_have_fails(local_profile_relay_url):
+    out = run_args(["--profile", "office"], {"RELAY_URL": local_profile_relay_url, "RELAY_SMOKE_LOCAL": "1"})
     assert out.returncode != 0 and "HTTP 403" in out.stderr, out.stdout + out.stderr
 
 

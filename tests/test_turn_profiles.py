@@ -54,10 +54,13 @@ async def test_no_profiles_configured_logs_local_and_dash(caplog):
     assert "caller=local profile=-" in line
 
 
-async def test_a_named_profile_on_a_relay_without_profiles_is_403():
-    async with make_relay("") as r:
+async def test_a_named_profile_on_a_relay_without_profiles_is_ignored(caplog):
+    caplog.set_level(logging.INFO)
+    async with make_relay("", say("Hello.")) as r:
         resp = await r.turn("hi", profile="office")
-    assert resp.status_code == 403 and resp.json() == FORBIDDEN and r.claude.calls == []
+    assert resp.status_code == 200 and resp.json()["reply"] == "Hello."
+    (line,) = turn_lines(caplog)
+    assert "profile=-" in line  # it ran under the relay's rules, not under any "office"
 
 
 async def test_a_forbidden_profile_is_403_and_reaches_nothing():

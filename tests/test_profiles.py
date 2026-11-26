@@ -20,14 +20,15 @@ def test_no_callers_no_profiles_is_one_caller_with_everything():
     caller = roster.caller("local")
     assert caller is not None and caller.name == "local" and roster.implicit == caller
     assert roster.choose(caller, None) is EVERYTHING
-    assert roster.choose(caller, "-") is None and roster.choose(caller, "office") is None
+    # With no profiles configured the field is ignored: any name runs under EVERYTHING.
+    assert roster.choose(caller, "-") is EVERYTHING and roster.choose(caller, "office") is EVERYTHING
 
 
 def test_service_tokens_are_one_caller():
     roster = Roster(RelayConfig(access=ACCESS.model_copy(update={"service_tokens": ("a.access", "b.access")})))
     a, b = roster.caller("a.access"), roster.caller("b.access")
     assert a is not None and a == b and a.name == "default" and roster.implicit == a
-    assert roster.choose(a, None) is EVERYTHING and roster.choose(a, "personal") is None
+    assert roster.choose(a, None) is EVERYTHING and roster.choose(a, "personal") is EVERYTHING
 
 
 def test_a_caller_gets_its_own_profiles_first_is_default():
@@ -55,7 +56,7 @@ def test_callers_without_profiles_get_everything():
     cfg = RelayConfig(access=ACCESS, caller=(CallerConfig(name="phone", token="phone.access"),))
     roster = Roster(cfg)
     phone = roster.caller("phone.access")
-    assert phone is not None and roster.choose(phone, None) is EVERYTHING and roster.choose(phone, "-") is None
+    assert phone is not None and roster.choose(phone, None) is EVERYTHING and roster.choose(phone, "-") is EVERYTHING
 
 
 def test_everything_has_no_limits():
