@@ -15,9 +15,11 @@ The design is `docs/superpowers/specs/2026-11-23-hey-claude-car-design.md`; the 
 - `uv run mypy`: strict type check of `src/`
 - `uv run hey-claude-relay check-config --config relay.example.toml`: load a config
 - `docker build -t relay:dev .`: the image as deployed (Alpine, musl)
+- `./installer/build.sh`: `dist/setup-hey-claude-relay.sh`, the native Alpine installer;
+  `sh installer/e2e.sh alpine:3.24` runs it in a container that boots OpenRC (needs Docker and the network)
 
 CI (`.github/workflows/ci.yml`) runs exactly these, plus a Docker build that starts the image
-with `relay.example.toml` and checks `/healthz`.
+with `relay.example.toml` and checks `/healthz`, and the installer end to end on two Alpine releases.
 
 ## Rules
 
@@ -76,5 +78,8 @@ with `relay.example.toml` and checks `/healthz`.
 - `src/hey_claude_relay/logsafe.py`: the log filter that masks secret values
 - `src/hey_claude_relay/__main__.py`: `serve`, `check-config`
 - `src/hey_claude_relay/prompts/voice.md`: the default voice instructions, shipped in the package
+- `installer/`: the native Alpine install: `build.sh`, `setup-head.sh` (the installer before its
+  payload), the OpenRC script, the `hey-claude-relay` wrapper and `e2e.sh`. Plain POSIX sh;
+  `tests/test_installer.py` builds and reads it
 - `scripts/smoke.sh`: curl smoke test for a running relay (plain POSIX sh; `tests/test_smoke_script.py` runs it)
 - `relay.example.toml`, `compose.example.yaml`: the templates; they must stay loadable and generic
