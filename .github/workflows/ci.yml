@@ -85,3 +85,25 @@ jobs:
       - name: Container log
         if: always()
         run: docker logs relay
+
+  # The native install: dist/setup-hey-claude-relay.sh in an Alpine container that boots OpenRC,
+  # as an LXC container does. 3.22 ships Python 3.12 and 3.24 ships 3.14; on both, uv installs the
+  # 3.13 the image runs. installer/e2e.sh installs, configures with placeholders, starts, upgrades,
+  # rolls back a broken upgrade and uninstalls. The images are pinned by digest; bump them by hand.
+  alpine-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
+          - alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck the installer
+        run: shellcheck -s sh installer/build.sh installer/setup-head.sh installer/e2e.sh installer/hey-claude-relay.wrapper installer/hey-claude-relay.initd
+      - name: Build the installer
+        run: sh installer/build.sh
+      - name: Install, start, upgrade, roll back and uninstall
+        run: sh installer/e2e.sh "${{ matrix.image }}"

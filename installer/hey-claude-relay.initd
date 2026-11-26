@@ -1,0 +1,34 @@
+#!/sbin/openrc-run
+# shellcheck shell=sh disable=SC2034,SC1090  # OpenRC reads these variables; the conf file is the owner's
+# hey-claude-relay, installed by setup-hey-claude-relay.sh. Settings and secrets are in
+# /etc/conf.d/hey-claude-relay; after editing it or relay.toml: rc-service hey-claude-relay restart
+name="hey-claude-relay"
+description="Hey Claude relay: spoken text in, a Claude reply out"
+
+# OpenRC runs this as root and reads the conf file itself, but only exports what it is told to.
+# Every line goes to the relay: a server's token_env names a variable this script cannot know.
+set -a
+. "/etc/conf.d/${RC_SVCNAME}"
+set +a
+RELAY_COMMIT=$(cat /opt/hey-claude-relay/COMMIT 2>/dev/null || true)
+export RELAY_COMMIT
+
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=10
+respawn_period=600
+command="/opt/hey-claude-relay/.venv/bin/python"
+command_args="-m hey_claude_relay serve"
+command_user="relay:relay"
+directory="/opt/hey-claude-relay"
+output_log="/var/log/hey-claude-relay.log"
+error_log="/var/log/hey-claude-relay.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath -f -m 0640 -o relay:relay /var/log/hey-claude-relay.log
+}

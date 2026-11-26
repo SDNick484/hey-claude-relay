@@ -254,10 +254,60 @@ image sets the first and passes `--bind 0.0.0.0 --port 8787`, which win over the
 
 ## Deploying
 
-The relay runs as one container on any Docker host, published through a Cloudflare tunnel
-behind its own Access application. These are the steps that need your accounts and your
-secrets. Nothing here asks you to put a secret anywhere but `.env` on the host and the phone
-app's settings (the smoke test in step 9 reads the phone's token into one shell, unseen).
+The relay runs natively on Alpine (an LXC container or a VM, under OpenRC) or as one container
+on any Docker host. Either way it is published through a Cloudflare tunnel behind its own Access
+application. The numbered steps after the two ways in are the ones that need your accounts and
+your secrets. Nothing here asks you to put a secret anywhere but the host's secrets file and the
+phone app's settings (the smoke test in step 9 reads the phone's token into one shell, unseen).
+
+### Natively on Alpine
+
+On a machine with this repository, build the installer, a single self-extracting script. Then
+copy it to the Alpine host and run it there as root. With Proxmox, for container `<CT_ID>`:
+
+```sh
+./installer/build.sh
+pct push <CT_ID> dist/setup-hey-claude-relay.sh /root/setup-hey-claude-relay.sh
+pct exec <CT_ID> -- sh /root/setup-hey-claude-relay.sh
+```
+
+The installer is safe to run again; that is also how you upgrade. It:
+
+- adds `python3` and `py3-pip` with apk, then the same `uv` the Docker image uses, which installs
+  Python 3.13 and exactly the dependencies in `uv.lock` (Alpine's own Python can be older than
+  the relay needs). This step needs PyPI and GitHub; if it fails during an upgrade, the
+  previous version goes back in place and is started again;
+- runs the relay as the unprivileged user `relay` under OpenRC's `supervise-daemon`;
+- copies `relay.example.toml` to `/etc/hey-claude-relay/relay.toml` the first time, and never
+  replaces it after that;
+- adds any missing setting to `/etc/conf.d/hey-claude-relay` without changing one you have set;
+- starts the relay, and adds it to the default runlevel, only once `check-config` passes. On a
+  first install that means it stops after installing and lists what to set.
+
+| Where | What |
+| --- | --- |
+| `/etc/hey-claude-relay/relay.toml` | the settings; a `prompt_file` goes beside it |
+| `/etc/conf.d/hey-claude-relay` | secrets, the listen address (`RELAY_BIND`, `RELAY_PORT`), root only; the steps below call it `.env` |
+| `hey-claude-relay` | the command, with the service's settings: `check-config`, `hash-passphrase` |
+| `/var/log/hey-claude-relay.log` | the log |
+| `/opt/hey-claude-relay`, `/opt/hey-claude-relay-runtime` | the app; uv and its Python |
+
+`RELAY_BIND` starts as the host's LAN address, where a tunnel running elsewhere (or in Docker)
+can reach it. Set it to `127.0.0.1` if cloudflared runs on the same host outside Docker. Every
+line in the secrets file reaches the relay, so a server's `token_env` is one more line there.
+`sh setup-hey-claude-relay.sh --uninstall` removes the app and the service and keeps
+`/etc/hey-claude-relay` and the secrets file.
+
+With the native install, the numbered steps change in four places:
+
+| Step | Instead of | Do this |
+| --- | --- | --- |
+| 3, 5, 6, 7 | `vim .env` | `vim /etc/conf.d/hey-claude-relay` |
+| 7 | `docker run --rm -it hey-claude-relay hash-passphrase` | `hey-claude-relay hash-passphrase` |
+| 8 | `docker compose run --rm relay check-config` | `hey-claude-relay check-config` |
+| 9 | `docker compose up -d` | run the installer again |
+
+### With Docker
 
 On the host, get the code and build the image:
 
@@ -349,10 +399,12 @@ containing `$`, `#` or a quote needs care, because Compose treats those speciall
 
    It prints one `ok` line per check and sends two real turns to Claude.
 
-To update: `git pull`, build the image again, `docker compose up -d`. A restart forgets
-conversations, held calls and the lockout, which is by design.
+To update: `git pull`, then on Alpine build the installer again and run it on the host; with
+Docker, build the image again and `docker compose up -d`. A restart forgets conversations, held
+calls and the lockout, which is by design.
 
-If something is wrong, `docker compose logs relay` has one line per turn and one per refusal.
+If something is wrong, the log (`/var/log/hey-claude-relay.log` on Alpine, `docker compose logs
+relay` with Docker) has one line per turn and one per refusal.
 Refusals name the reason (no assertion, an unlisted token, a bad audience) and never the token.
 
 ## Adding a Home Assistant speaker
@@ -365,7 +417,8 @@ Assistant's integration settings and nowhere else; never into a file in this rep
    (say "relay home-assistant") and add it to the relay's Access application policy, the one with
    action *Service Auth* from step 1 of "Deploying". Keep the Client Secret in your password
    manager until step 6.
-2. **Its caller and the profiles.** `vim relay.toml` on the host and copy the `[[caller]]` and
+2. **Its caller and the profiles.** `vim relay.toml` on the host
+   (`/etc/hey-claude-relay/relay.toml` on Alpine) and copy the `[[caller]]` and
    `[[profile]]` tables from `relay.example.toml`:
    - the `phone` caller's `token` is the phone token's Client ID (move it out of
      `[access] service_tokens` and delete that line: one or the other, not both);
@@ -374,8 +427,10 @@ Assistant's integration settings and nowhere else; never into a file in this rep
    - keep `gated = "refuse"` on `office` until Home Assistant is known to keep the passphrase out
      of its chat log and pipeline debug history;
    - check that `shared`'s `servers` and `allow_services` are what anyone in that room may do.
-3. **Check it.** `docker compose run --rm relay check-config` prints `ok:` or the key to fix.
-4. **Deploy.** `git pull`, build the image again as in "Deploying", then `docker compose up -d`.
+3. **Check it.** `hey-claude-relay check-config` on Alpine, `docker compose run --rm relay
+   check-config` with Docker. It prints `ok:` or the key to fix.
+4. **Deploy.** On Alpine, `rc-service hey-claude-relay restart`. With Docker, `git pull`, build
+   the image again as in "Deploying", then `docker compose up -d`.
 5. **Smoke test as Home Assistant.** From any machine, with the **Home Assistant** token typed
    unseen as in step 9 of "Deploying":
 

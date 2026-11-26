@@ -1,0 +1,8 @@
+#!/bin/sh
+# /usr/local/bin/hey-claude-relay, installed by setup-hey-claude-relay.sh: the installed relay with
+# the service's settings, so `hey-claude-relay check-config` (as root) checks what the service runs.
+#   hey-claude-relay check-config
+#   hey-claude-relay hash-passphrase
+# shellcheck source=/dev/null
+if [ -r /etc/conf.d/hey-claude-relay ]; then set -a; . /etc/conf.d/hey-claude-relay; set +a; fi
+exec /opt/hey-claude-relay/.venv/bin/python -m hey_claude_relay "$@"
